@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Band Office Management System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 220px; height: 100vh; background: #1a472a; color: white; padding: 1rem; overflow-y: auto; z-index: 100; }
+        .sidebar h1 { font-size: 1.1rem; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.2); }
+        .sidebar .nav { display: flex; flex-direction: column; gap: 0.25rem; }
+        .sidebar .nav button { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 0.5rem 0.75rem; border-radius: 4px; cursor: pointer; text-align: left; font-size: 0.9rem; }
+        .sidebar .nav button:hover, .sidebar .nav button.active { background: rgba(255,255,255,0.2); }
+        .main-content { margin-left: 220px; padding: 2rem; }
+        .container { max-width: 1400px; margin: 0; padding: 0; }
+        .section { display: none; }
+        .section.active { display: block; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .stat-card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-card h3 { font-size: 0.875rem; color: #666; text-transform: uppercase; margin-bottom: 0.5rem; }
+        .stat-card .value { font-size: 2rem; font-weight: bold; color: #1a472a; }
+        .card { background: white; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h2 { margin-bottom: 1rem; color: #1a472a; }
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .btn { background: #1a472a; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
+        .btn:hover { background: #2d5a3d; }
+        .btn-secondary { background: #666; }
+        .btn-danger { background: #c41e3a; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f8f8f8; font-weight: 600; }
+        tr:hover { background: #f5f5f5; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; padding: 2rem; border-radius: 8px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .close { background: none; border: none; font-size: 1.5rem; cursor: pointer; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.25rem; font-weight: 500; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; }
+        .form-group textarea { min-height: 80px; resize: vertical; }
+        .form-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.5rem; }
+        .badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem; font-weight: 500; }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-warning { background: #fff3cd; color: #856404; }
+        .badge-danger { background: #f8d7da; color: #721c24; }
+        .badge-info { background: #d1ecf1; color: #0c5460; }
+        .empty-state { text-align: center; padding: 3rem; color: #666; }
+        .loading { text-align: center; padding: 2rem; }
+        .error { background: #f8d7da; color: #721c24; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
+        .actions { display: flex; gap: 0.5rem; }
+        .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.875rem; }
+        .search-box { padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; width: 300px; }
+        .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+        .chart-item { margin-bottom: 0.75rem; }
+        .chart-item-label { font-size: 0.875rem; margin-bottom: 0.25rem; word-break: break-word; }
+        .chart-item-row { display: flex; align-items: center; gap: 0.5rem; }
+        .chart-bar-track { flex: 1; height: 20px; background: #e9ecef; border-radius: 4px; overflow: hidden; }
+        .chart-bar-value { height: 100%; background: #1a472a; border-radius: 4px; min-width: 4px; }
+        .chart-item-count { font-size: 0.875rem; min-width: 24px; text-align: right; }
+        .audit-table { font-size: 0.875rem; }
+        .audit-table th, .audit-table td { padding: 0.5rem; vertical-align: top; }
+        .audit-changes { max-width: 400px; max-height: 120px; overflow-y: auto; background: #f8f8f8; border-radius: 4px; padding: 0.5rem; font-size: 0.8rem; }
+        .audit-changes pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <h1>Band Office <span id="notif-badge" style="display:none; background:#c41e3a; color:white; border-radius:50%; padding:0.1rem 0.4rem; font-size:0.7rem; margin-left:0.25rem;">0</span></h1>
+        <nav class="nav">
+            <button data-section="dashboard" class="active">Dashboard</button>
+            <button data-section="notifications" id="notif-nav-btn" style="position:relative;">Notifications</button>
+            <button data-section="members">Members</button>
+            <button data-section="staff">Staff</button>
+            <button data-section="housing">Housing</button>
+            <button data-section="programs">Programs</button>
+            <button data-section="council">Council</button>
+            <button data-section="finances">Finances</button>
+            <button data-section="infrastructure">Infrastructure</button>
+            <button data-section="tasks">Tasks</button>
+            <button data-section="documents">Documents</button>
+            <button data-section="reports">Reports</button>
+            <button data-section="audit">Audit Log</button>
+            <button data-section="leave-requests">Leave Requests</button>
+            <button data-section="purchase-requisitions">Purchase Requisitions</button>
+            <button data-section="incident-reports">Incident Reports</button>
+            <button data-section="meeting-requests">Meeting Requests</button>
+        </nav>
+    </div>
+    <div class="main-content">
+        <div class="container">
+        <div id="error-message" class="error" style="display:none;"></div>
+
+        <div id="dashboard-section" class="section active">
+            <div class="stats-grid" id="dashboard-stats"></div>
+            <div class="charts">
+                <div class="card">
+                    <h2>Housing by Status</h2>
+                    <div id="housing-chart"></div>
+                </div>
+                <div class="card">
+                    <h2>Expenses by Category</h2>
+                    <div id="finances-chart"></div>
+                </div>
+                <div class="card">
+                    <h2>Infrastructure by Condition</h2>
+                    <div id="infrastructure-chart"></div>
+                </div>
+                <div class="card">
+                    <h2>Tasks by Status</h2>
+                    <div id="tasks-chart"></div>
+                </div>
+                <div class="card">
+                    <h2>Notifications by Type</h2>
+                    <div id="notifications-chart"></div>
+                </div>
+                <div class="card">
+                    <h2>Staff by Department</h2>
+                    <div id="staff-chart"></div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>Recent Resolutions</h2>
+                <div id="recent-resolutions"></div>
+            </div>
+            <div class="card">
+                <h2>Recent Finances</h2>
+                <div id="recent-finances"></div>
+            </div>
+        </div>
+
+        <div id="notifications-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <div></div>
+                    <button class="btn" onclick="markAllNotificationsRead()">Mark All Read</button>
+                </div>
+                <div id="notifications-table"></div>
+            </div>
+        </div>
+
+        <div id="members-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <input type="text" id="member-search" class="search-box" placeholder="Search members...">
+                    <button class="btn" onclick="openModal('member')">+ Add Member</button>
+                </div>
+                <div id="members-table"></div>
+            </div>
+        </div>
+
+        <div id="staff-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <input type="text" id="staff-search" class="search-box" placeholder="Search staff...">
+                    <button class="btn" onclick="openModal('staff')">+ Add Staff</button>
+                </div>
+                <div id="staff-table"></div>
+            </div>
+        </div>
+
+        <div id="housing-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="housing-filter" class="search-box" onchange="loadHousing()">
+                        <option value="">All Status</option>
+                        <option value="occupied">Occupied</option>
+                        <option value="vacant">Vacant</option>
+                        <option value="needs-repair">Needs Repair</option>
+                    </select>
+                    <button class="btn" onclick="openModal('housing')">+ Add Housing</button>
+                </div>
+                <div id="housing-table"></div>
+            </div>
+        </div>
+
+        <div id="programs-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="program-filter" class="search-box" onchange="loadPrograms()">
+                        <option value="">All Status</option>
+                        <option value="active">Active</option>
+                        <option value="completed">Completed</option>
+                        <option value="pending">Pending</option>
+                    </select>
+                    <button class="btn" onclick="openModal('program')">+ Add Program</button>
+                </div>
+                <div id="programs-table"></div>
+            </div>
+        </div>
+
+        <div id="council-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="council-filter" class="search-box" onchange="loadCouncil()">
+                        <option value="">All Types</option>
+                        <option value="resolution">Resolutions</option>
+                        <option value="by-law">By-laws</option>
+                        <option value="meeting">Meetings</option>
+                    </select>
+                    <button class="btn" onclick="openModal('council')">+ Add Council Item</button>
+                </div>
+                <div id="council-table"></div>
+            </div>
+        </div>
+
+        <div id="finances-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="finance-filter" class="search-box" onchange="loadFinances()">
+                        <option value="">All Types</option>
+                        <option value="income">Income</option>
+                        <option value="expense">Expenses</option>
+                    </select>
+                    <div>
+                        <button class="btn btn-secondary" onclick="exportFinances()">Export CSV</button>
+                        <button class="btn" onclick="openModal('finance')">+ Add Finance</button>
+                    </div>
+                </div>
+                <div id="finances-table"></div>
+            </div>
+        </div>
+
+        <div id="infrastructure-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <div></div>
+                    <button class="btn" onclick="openModal('infrastructure')">+ Add Infrastructure</button>
+                </div>
+                <div id="infrastructure-table"></div>
+            </div>
+        </div>
+
+        <div id="tasks-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="task-filter" class="search-box" onchange="loadTasks()">
+                        <option value="">All Status</option>
+                        <option value="pending">Pending</option>
+                        <option value="in-progress">In Progress</option>
+                        <option value="completed">Completed</option>
+                    </select>
+                    <button class="btn" onclick="openModal('task')">+ Add Task</button>
+                </div>
+                <div id="tasks-table"></div>
+            </div>
+        </div>
+
+        <div id="documents-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="document-filter" class="search-box" onchange="loadDocuments()">
+                        <option value="">All Types</option>
+                        <option value="report">Reports</option>
+                        <option value="policy">Policies</option>
+                        <option value="agreement">Agreements</option>
+                        <option value="by-law">By-laws</option>
+                        <option value="checklist">Checklists</option>
+                    </select>
+                    <button class="btn" onclick="openModal('document')">+ Add Document</button>
+                </div>
+                <div id="documents-table"></div>
+            </div>
+        </div>
+
+        <div id="reports-section" class="section">
+            <div class="stats-grid" id="reports-stats"></div>
+            <div class="card">
+                <h2>Budget vs Actual Spending</h2>
+                <div id="budget-report"></div>
+            </div>
+            <div class="card">
+                <h2>Program Summary</h2>
+                <div id="program-summary"></div>
+            </div>
+            <div class="card">
+                <h2>Member Statistics</h2>
+                <div id="member-stats"></div>
+            </div>
+        </div>
+
+        <div id="audit-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="audit-filter" class="search-box" onchange="loadAuditLog()">
+                        <option value="">All Tables</option>
+                        <option value="members">Members</option>
+                        <option value="staff">Staff</option>
+                        <option value="housing">Housing</option>
+                        <option value="programs">Programs</option>
+                        <option value="council">Council</option>
+                        <option value="finances">Finances</option>
+                    </select>
+                </div>
+                <div id="audit-table"></div>
+            </div>
+        </div>
+
+        <div id="leave-requests-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="leave-filter" class="search-box" onchange="loadLeaveRequests()">
+                        <option value="">All Status</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                    </select>
+                    <button class="btn" onclick="openModal('leave-request')">+ Submit Leave Request</button>
+                </div>
+                <div id="leave-requests-table"></div>
+            </div>
+        </div>
+
+        <div id="purchase-requisitions-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="purchase-filter" class="search-box" onchange="loadPurchaseRequisitions()">
+                        <option value="">All Status</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                    </select>
+                    <button class="btn" onclick="openModal('purchase-requisition')">+ New Purchase Requisition</button>
+                </div>
+                <div id="purchase-requisitions-table"></div>
+            </div>
+        </div>
+
+        <div id="incident-reports-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="incident-filter" class="search-box" onchange="loadIncidentReports()">
+                        <option value="">All Status</option>
+                        <option value="open">Open</option>
+                        <option value="under-review">Under Review</option>
+                        <option value="resolved">Resolved</option>
+                    </select>
+                    <button class="btn" onclick="openModal('incident-report')">+ Report Incident</button>
+                </div>
+                <div id="incident-reports-table"></div>
+            </div>
+        </div>
+
+        <div id="meeting-requests-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <select id="meeting-filter" class="search-box" onchange="loadMeetingRequests()">
+                        <option value="">All Status</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                    </select>
+                    <button class="btn" onclick="openModal('meeting-request')">+ Request Meeting</button>
+                </div>
+                <div id="meeting-requests-table"></div>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">Add Item</h2>
+                <button class="close" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="modal-form" onsubmit="saveItem(event)">
+                <div id="modal-fields"></div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+        let currentSection = 'dashboard';
+        let currentType = null;
+        let editingId = null;
+
+        document.querySelectorAll('.nav button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                showSection(btn.dataset.section);
+            });
+        });
+
+        function showSection(section) {
+            currentSection = section;
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById(section + '-section').classList.add('active');
+            if (section === 'dashboard') loadDashboard();
+            else if (section === 'notifications') loadNotifications();
+            else if (section === 'members') loadMembers();
+            else if (section === 'staff') loadStaff();
+            else if (section === 'housing') loadHousing();
+            else if (section === 'programs') loadPrograms();
+            else if (section === 'council') loadCouncil();
+            else if (section === 'finances') loadFinances();
+            else if (section === 'infrastructure') loadInfrastructure();
+            else if (section === 'tasks') loadTasks();
+            else if (section === 'documents') loadDocuments();
+            else if (section === 'reports') loadReports();
+            else if (section === 'audit') loadAuditLog();
+            else if (section === 'leave-requests') loadLeaveRequests();
+            else if (section === 'purchase-requisitions') loadPurchaseRequisitions();
+            else if (section === 'incident-reports') loadIncidentReports();
+            else if (section === 'meeting-requests') loadMeetingRequests();
+        }
+
+        function showError(message) {
+            const el = document.getElementById('error-message');
+            el.textContent = message;
+            el.style.display = 'block';
+            setTimeout(() => el.style.display = 'none', 5000);
+        }
+
+        async function api(url, options = {}) {
+            try {
+                const res = await fetch(url, options);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({error: res.statusText}));
+                    throw new Error(err.error || res.statusText);
+                }
+                return options.method && options.method !== 'GET' ? res.json() : res.json();
+            } catch (err) {
+                showError(err.message);
+                throw err;
+            }
+        }
+
+        function renderTable(container, columns, rows, rowMapper) {
+            if (!rows.length) {
+                container.innerHTML = '<p class="empty-state">No data</p>';
+                return;
+            }
+            container.innerHTML = `<table><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr>` +
+                rows.map(rowMapper).join('') + `</table>`;
+        }
+
+        function renderBarChart(container, data, formatter) {
+            if (!data || !Object.keys(data).length) {
+                container.innerHTML = '<p class="empty-state">No data</p>';
+                return;
+            }
+            const max = Math.max(...Object.values(data));
+            container.innerHTML = Object.entries(data).map(([k, v]) =>
+                `<div class="chart-item"><div class="chart-item-label">${k}</div><div class="chart-item-row"><div class="chart-bar-track"><div class="chart-bar-value" style="width:${(v / max * 100)}%"></div></div><div class="chart-item-count">${formatter(v)}</div></div></div>`
+            ).join('');
+        }
+
+        async function loadDashboard() {
+            const data = await api('/api/dashboard');
+            document.getElementById('dashboard-stats').innerHTML = `
+                <div class="stat-card"><h3>Members</h3><div class="value">${data.members}</div></div>
+                <div class="stat-card"><h3>Staff</h3><div class="value">${data.staff}</div></div>
+                <div class="stat-card"><h3>Housing Units</h3><div class="value">${data.housing_units}</div></div>
+                <div class="stat-card"><h3>Active Programs</h3><div class="value">${data.active_programs}</div></div>
+                <div class="stat-card"><h3>Pending Council</h3><div class="value">${data.pending_council}</div></div>
+                <div class="stat-card"><h3>Total Budget</h3><div class="value">$${data.total_budget.toLocaleString()}</div></div>
+                <div class="stat-card"><h3>Total Spent</h3><div class="value">$${data.total_spent.toLocaleString()}</div></div>
+            `;
+
+            const pendingData = await api('/api/dashboard/pending-approvals');
+            document.querySelectorAll('.pending-approvals-card').forEach(el => el.remove());
+            if (pendingData.total_pending > 0) {
+                const pendingHtml = `
+                    <div class="card pending-approvals-card" style="border-left: 4px solid #c41e3a;">
+                        <h2>Pending Approvals (${pendingData.total_pending})</h2>
+                        <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom:0;">
+                            <div class="stat-card"><h3>Leave Requests</h3><div class="value">${pendingData.leave_requests}</div></div>
+                            <div class="stat-card"><h3>Purchase Requisitions</h3><div class="value">${pendingData.purchase_requisitions}</div></div>
+                            <div class="stat-card"><h3>Meeting Requests</h3><div class="value">${pendingData.meeting_requests}</div></div>
+                            <div class="stat-card"><h3>Open Incidents</h3><div class="value">${pendingData.open_incidents}</div></div>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('dashboard-stats').insertAdjacentHTML('afterend', pendingHtml);
+            }
+
+            renderBarChart(document.getElementById('housing-chart'), data.housing_by_status, v => v);
+            renderBarChart(document.getElementById('finances-chart'), data.finances_by_category, v => `$${v.toLocaleString()}`);
+            renderBarChart(document.getElementById('infrastructure-chart'), data.infrastructure_by_condition, v => v);
+            renderBarChart(document.getElementById('tasks-chart'), data.tasks_by_status, v => v);
+            renderBarChart(document.getElementById('notifications-chart'), data.notifications_by_type, v => v);
+            renderBarChart(document.getElementById('staff-chart'), data.staff_by_department, v => v);
+
+            const resolutions = data.recent_resolutions || [];
+            renderTable(document.getElementById('recent-resolutions'), ['Type', 'Title', 'Date', 'Status'], resolutions, r =>
+                `<tr><td>${r.item_type}</td><td>${r.title}</td><td>${r.date}</td><td><span class="badge badge-info">${r.status}</span></td></tr>`
+            );
+
+            const finances = data.recent_finances || [];
+            renderTable(document.getElementById('recent-finances'), ['Category', 'Type', 'Amount', 'Date'], finances, f =>
+                `<tr><td>${f.category}</td><td><span class="badge ${f.type==='income'?'badge-success':'badge-warning'}">${f.type}</span></td><td>$${f.amount.toLocaleString()}</td><td>${f.date}</td></tr>`
+            );
+
+            updateNotificationBadge();
+        }
+
+        async function loadNotifications() {
+            const data = await api('/api/notifications');
+            const container = document.getElementById('notifications-table');
+            renderTable(container, ['Type', 'Title', 'Message', 'Priority', 'Read', 'Actions'], data.notifications, n =>
+                `<tr><td><span class="badge ${n.type==='deadline'?'badge-danger':n.type==='action'?'badge-warning':'badge-info'}">${n.type}</span></td><td>${n.title}</td><td>${n.message}</td><td><span class="badge ${n.priority==='high'?'badge-danger':n.priority==='medium'?'badge-warning':'badge-info'}">${n.priority}</span></td><td>${n.is_read?'Yes':'No'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('notification', ${n.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('notifications', ${n.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function updateNotificationBadge() {
+            try {
+                const data = await api('/api/notifications');
+                const badge = document.getElementById('notif-badge');
+                if (data.unread_count > 0) {
+                    badge.textContent = data.unread_count;
+                    badge.style.display = 'inline';
+                } else {
+                    badge.style.display = 'none';
+                }
+            } catch (e) {}
+        }
+
+        async function markAllNotificationsRead() {
+            try {
+                await api('/api/notifications/mark-all-read', {method: 'POST'});
+                loadNotifications();
+                updateNotificationBadge();
+            } catch (e) {}
+        }
+
+        async function loadMembers() {
+            const search = document.getElementById('member-search').value;
+            const data = await api(`/api/members?search=${encodeURIComponent(search)}`);
+            const container = document.getElementById('members-table');
+            renderTable(container, ['Band #', 'Name', 'Gender', 'Status #', 'Reserve', 'Phone', 'Actions'], data.members, m =>
+                `<tr><td>${m.band_number}</td><td>${m.given_name} ${m.surname}</td><td>${m.gender}</td><td>${m.status_number}</td><td>${m.reserve}</td><td>${m.phone}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('member', ${m.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('members', ${m.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadStaff() {
+            const search = document.getElementById('staff-search').value;
+            const data = await api(`/api/staff?search=${encodeURIComponent(search)}`);
+            const container = document.getElementById('staff-table');
+            renderTable(container, ['Name', 'Position', 'Department', 'Status', 'Email', 'Actions'], data, s =>
+                `<tr><td>${s.given_name} ${s.surname}</td><td>${s.position}</td><td>${s.department}</td><td><span class="badge ${s.status==='active'?'badge-success':'badge-danger'}">${s.status}</span></td><td>${s.email}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('staff', ${s.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('staff', ${s.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadHousing() {
+            const status = document.getElementById('housing-filter').value;
+            const data = await api(`/api/housing${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('housing-table');
+            renderTable(container, ['Address', 'Type', 'Beds/Baths', 'Occupants', 'Resident', 'Status', 'Condition', 'Actions'], data, h =>
+                `<tr><td>${h.address}</td><td>${h.unit_type}</td><td>${h.bedrooms}/${h.bathrooms}</td><td>${h.occupants}</td><td>${h.member_given_name || ''} ${h.member_surname || ''}</td><td><span class="badge ${h.status==='occupied'?'badge-success':h.status==='vacant'?'badge-info':'badge-danger'}">${h.status}</span></td><td>${h.condition}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('housing', ${h.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('housing', ${h.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadPrograms() {
+            const status = document.getElementById('program-filter').value;
+            const data = await api(`/api/programs${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('programs-table');
+            renderTable(container, ['Name', 'Type', 'Department', 'Budget', 'Spent', 'Status', 'Actions'], data, p =>
+                `<tr><td>${p.name}</td><td>${p.program_type}</td><td>${p.department}</td><td>$${p.budget.toLocaleString()}</td><td>$${p.spent.toLocaleString()}</td><td><span class="badge ${p.status==='active'?'badge-success':'badge-info'}">${p.status}</span></td><td class="actions"><button class="btn btn-sm" onclick="editItem('program', ${p.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('programs', ${p.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadCouncil() {
+            const type = document.getElementById('council-filter').value;
+            const data = await api(`/api/council${type ? '?type=' + type : ''}`);
+            const container = document.getElementById('council-table');
+            renderTable(container, ['Type', 'Title', 'Date', 'Status', 'ISC Submitted', 'Actions'], data, c =>
+                `<tr><td>${c.item_type}</td><td>${c.title}</td><td>${c.date}</td><td><span class="badge ${c.status==='approved'||c.status==='completed'?'badge-success':'badge-warning'}">${c.status}</span></td><td>${c.isc_submitted?'Yes':'No'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('council', ${c.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('council', ${c.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadFinances() {
+            const type = document.getElementById('finance-filter').value;
+            const data = await api(`/api/finances${type ? '?type=' + type : ''}`);
+            const container = document.getElementById('finances-table');
+            renderTable(container, ['Category', 'Type', 'Amount', 'Date', 'Description', 'Funding', 'Actions'], data, f =>
+                `<tr><td>${f.category}</td><td><span class="badge ${f.type==='income'?'badge-success':'badge-warning'}">${f.type}</span></td><td>$${f.amount.toLocaleString()}</td><td>${f.date}</td><td>${f.description}</td><td>${f.funding_source}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('finance', ${f.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('finances', ${f.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadInfrastructure() {
+            const data = await api('/api/infrastructure');
+            const container = document.getElementById('infrastructure-table');
+            renderTable(container, ['Name', 'Type', 'Location', 'Condition', 'Value', 'ISC Program', 'Actions'], data, i =>
+                `<tr><td>${i.name}</td><td>${i.asset_type}</td><td>${i.location}</td><td><span class="badge ${i.condition==='good'?'badge-success':i.condition==='fair'?'badge-warning':'badge-danger'}">${i.condition}</span></td><td>$${i.estimated_value.toLocaleString()}</td><td>${i.isc_funding_program||'-'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('infrastructure', ${i.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('infrastructure', ${i.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadTasks() {
+            const status = document.getElementById('task-filter').value;
+            const data = await api(`/api/tasks${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('tasks-table');
+            renderTable(container, ['Title', 'Priority', 'Assigned To', 'Due Date', 'Status', 'Actions'], data, t =>
+                `<tr><td>${t.title}</td><td><span class="badge ${t.priority==='high'?'badge-danger':t.priority==='medium'?'badge-warning':'badge-info'}">${t.priority}</span></td><td>${t.assigned_to||'-'}</td><td>${t.due_date||'-'}</td><td><span class="badge ${t.status==='completed'?'badge-success':'badge-warning'}">${t.status}</span></td><td class="actions"><button class="btn btn-sm" onclick="editItem('task', ${t.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('tasks', ${t.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadDocuments() {
+            const type = document.getElementById('document-filter').value;
+            const data = await api(`/api/documents${type ? '?type=' + type : ''}`);
+            const container = document.getElementById('documents-table');
+            renderTable(container, ['Title', 'Type', 'File Path', 'Created By', 'Created', 'Actions'], data, d =>
+                `<tr><td>${d.title}</td><td><span class="badge badge-info">${d.document_type}</span></td><td>${d.file_path||'-'}</td><td>${d.created_by||'-'}</td><td>${d.created_at||'-'}</td><td class="actions"><button class="btn btn-sm" onclick="viewDocument(${d.id})">View</button><button class="btn btn-sm btn-danger" onclick="deleteItem('documents', ${d.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadReports() {
+            const budgetData = await api('/api/reports/budget-vs-actual');
+            const budgetContainer = document.getElementById('budget-report');
+            renderTable(budgetContainer, ['Program', 'Budget', 'Spent', 'Remaining', 'Status'], budgetData, r =>
+                `<tr><td>${r.name}</td><td>$${r.budget.toLocaleString()}</td><td>$${r.spent.toLocaleString()}</td><td>$${r.remaining.toLocaleString()}</td><td><span class="badge ${r.status==='over'?'badge-danger':r.status==='warning'?'badge-warning':'badge-success'}">${r.status}</span></td></tr>`
+            );
+
+            const summaryData = await api('/api/reports/program-summary');
+            const summaryContainer = document.getElementById('program-summary');
+            renderTable(summaryContainer, ['Program', 'Type', 'Department', 'Budget', 'Spent', 'Start', 'End', 'Status'], summaryData, r =>
+                `<tr><td>${r.name}</td><td>${r.program_type}</td><td>${r.department}</td><td>$${r.budget.toLocaleString()}</td><td>$${r.spent.toLocaleString()}</td><td>${r.start_date}</td><td>${r.end_date}</td><td><span class="badge ${r.status==='active'?'badge-success':'badge-info'}">${r.status}</span></td></tr>`
+            );
+
+            const memberData = await api('/api/reports/member-stats');
+            const memberContainer = document.getElementById('member-stats');
+            memberContainer.innerHTML = `<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom:1rem;">
+                <div class="stat-card"><h3>Total Members</h3><div class="value">${memberData.total}</div></div>
+            </div>` +
+            `<h4>By Gender</h4><table><tr><th>Gender</th><th>Count</th></tr>` + memberData.by_gender.map(g => `<tr><td>${g.gender}</td><td>${g.count}</td></tr>`).join('') + `</table>` +
+            `<h4 style="margin-top:1rem;">By Reserve</h4><table><tr><th>Reserve</th><th>Count</th></tr>` + memberData.by_reserve.map(r => `<tr><td>${r.reserve}</td><td>${r.count}</td></tr>`).join('') + `</table>`;
+        }
+
+        async function loadAuditLog() {
+            const table = document.getElementById('audit-filter').value;
+            const data = await api(`/api/audit-log${table ? '?table=' + table : ''}`);
+            const container = document.getElementById('audit-table');
+            renderTable(container, ['Date', 'Action', 'Table', 'Record ID', 'User', 'Changes'], data, a => {
+                let changes = '';
+                if (a.old_values) changes += a.old_values;
+                if (a.new_values) changes += (changes ? ' → ' : '') + a.new_values;
+                return `<tr><td>${a.created_at}</td><td><span class="badge ${a.action==='CREATE'?'badge-success':a.action==='UPDATE'?'badge-warning':'badge-danger'}">${a.action}</span></td><td>${a.table_name}</td><td>${a.record_id||'-'}</td><td>${a.user_name||'-'}</td><td><div class="audit-changes"><pre>${changes}</pre></div></td></tr>`;
+            });
+        }
+
+        async function loadLeaveRequests() {
+            const status = document.getElementById('leave-filter').value;
+            const data = await api(`/api/leave-requests${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('leave-requests-table');
+            renderTable(container, ['Staff', 'Type', 'Start', 'End', 'Reason', 'Status', 'Approved By', 'Actions'], data, l =>
+                `<tr><td>${l.staff_given_name||''} ${l.staff_surname||''}</td><td><span class="badge badge-info">${l.leave_type}</span></td><td>${l.start_date}</td><td>${l.end_date}</td><td>${l.reason||'-'}</td><td><span class="badge ${l.status==='approved'?'badge-success':l.status==='rejected'?'badge-danger':'badge-warning'}">${l.status}</span></td><td>${l.approved_by||'-'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('leave-request', ${l.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('leave-requests', ${l.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadPurchaseRequisitions() {
+            const status = document.getElementById('purchase-filter').value;
+            const data = await api(`/api/purchase-requisitions${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('purchase-requisitions-table');
+            renderTable(container, ['Title', 'Amount', 'Vendor', 'Requested By', 'Department', 'Priority', 'Status', 'Actions'], data, p =>
+                `<tr><td>${p.title}</td><td>$${p.amount.toLocaleString()}</td><td>${p.vendor||'-'}</td><td>${p.requested_by||'-'}</td><td>${p.department||'-'}</td><td><span class="badge ${p.priority==='high'?'badge-danger':p.priority==='medium'?'badge-warning':'badge-info'}">${p.priority}</span></td><td><span class="badge ${p.status==='approved'?'badge-success':p.status==='rejected'?'badge-danger':'badge-warning'}">${p.status}</span></td><td class="actions"><button class="btn btn-sm" onclick="editItem('purchase-requisition', ${p.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('purchase-requisitions', ${p.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadIncidentReports() {
+            const status = document.getElementById('incident-filter').value;
+            const data = await api(`/api/incident-reports${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('incident-reports-table');
+            renderTable(container, ['Type', 'Description', 'Location', 'Severity', 'Reported By', 'Date', 'Status', 'Actions'], data, r =>
+                `<tr><td><span class="badge badge-info">${r.incident_type}</span></td><td>${r.description}</td><td>${r.location||'-'}</td><td><span class="badge ${r.severity==='high'?'badge-danger':r.severity==='medium'?'badge-warning':'badge-info'}">${r.severity}</span></td><td>${r.reported_by||'-'}</td><td>${r.date_reported}</td><td><span class="badge ${r.status==='resolved'?'badge-success':r.status==='under-review'?'badge-warning':'badge-danger'}">${r.status}</span></td><td class="actions"><button class="btn btn-sm" onclick="editItem('incident-report', ${r.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('incident-reports', ${r.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function loadMeetingRequests() {
+            const status = document.getElementById('meeting-filter').value;
+            const data = await api(`/api/meeting-requests${status ? '?status=' + status : ''}`);
+            const container = document.getElementById('meeting-requests-table');
+            renderTable(container, ['Title', 'Date', 'Time', 'Location', 'Requested By', 'Attendees', 'Status', 'Actions'], data, m =>
+                `<tr><td>${m.title}</td><td>${m.meeting_date}</td><td>${m.start_time||''} - ${m.end_time||''}</td><td>${m.location||'-'}</td><td>${m.requested_by||'-'}</td><td>${m.attendees||'-'}</td><td><span class="badge ${m.status==='approved'?'badge-success':m.status==='rejected'?'badge-danger':'badge-warning'}">${m.status}</span></td><td class="actions"><button class="btn btn-sm" onclick="editItem('meeting-request', ${m.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('meeting-requests', ${m.id})">Delete</button></td></tr>`
+            );
+        }
+
+        async function viewDocument(id) {
+            window.open(`/api/documents/${id}/file`, '_blank');
+        }
+
+        const fieldDefs = {
+            member: [
+                {name:'band_number',label:'Band Number',required:true},
+                {name:'surname',label:'Surname',required:true},
+                {name:'given_name',label:'Given Name',required:true},
+                {name:'middle_name',label:'Middle Name'},
+                {name:'dob',label:'Date of Birth',type:'date'},
+                {name:'gender',label:'Gender',type:'select',options:['M','F','Other']},
+                {name:'status_number',label:'Status Number'},
+                {name:'reserve',label:'Reserve'},
+                {name:'address',label:'Address'},
+                {name:'city',label:'City'},
+                {name:'province',label:'Province'},
+                {name:'postal_code',label:'Postal Code'},
+                {name:'phone',label:'Phone'},
+                {name:'email',label:'Email',type:'email'},
+                {name:'guardian',label:'Guardian'},
+                {name:'membership_date',label:'Membership Date',type:'date'},
+                {name:'notes',label:'Notes',type:'textarea'}
+            ],
+            staff: [
+                {name:'surname',label:'Surname',required:true},
+                {name:'given_name',label:'Given Name',required:true},
+                {name:'position',label:'Position'},
+                {name:'department',label:'Department'},
+                {name:'start_date',label:'Start Date',type:'date'},
+                {name:'end_date',label:'End Date',type:'date'},
+                {name:'status',label:'Status',type:'select',options:['active','inactive']},
+                {name:'phone',label:'Phone'},
+                {name:'email',label:'Email',type:'email'},
+                {name:'salary',label:'Salary',type:'number'},
+                {name:'notes',label:'Notes',type:'textarea'}
+            ],
+            housing: [
+                {name:'address',label:'Address',required:true},
+                {name:'unit_type',label:'Unit Type',type:'select',options:['Single Family','Apartment','Senior','Duplex','Townhouse']},
+                {name:'bedrooms',label:'Bedrooms',type:'number'},
+                {name:'bathrooms',label:'Bathrooms',type:'number'},
+                {name:'occupants',label:'Occupants',type:'number'},
+                {name:'member_id',label:'Member ID',type:'number'},
+                {name:'status',label:'Status',type:'select',options:['occupied','vacant','needs-repair']},
+                {name:'condition',label:'Condition',type:'select',options:['good','fair','poor']},
+                {name:'maintenance_notes',label:'Maintenance Notes',type:'textarea'},
+                {name:'assigned_date',label:'Assigned Date',type:'date'},
+                {name:'isc_funding_eligible',label:'ISC Funding Eligible',type:'select',options:['1','0']}
+            ],
+            program: [
+                {name:'name',label:'Name',required:true},
+                {name:'program_type',label:'Type'},
+                {name:'department',label:'Department'},
+                {name:'funding_source',label:'Funding Source'},
+                {name:'budget',label:'Budget',type:'number'},
+                {name:'spent',label:'Spent',type:'number'},
+                {name:'start_date',label:'Start Date',type:'date'},
+                {name:'end_date',label:'End Date',type:'date'},
+                {name:'status',label:'Status',type:'select',options:['active','completed','pending']},
+                {name:'description',label:'Description',type:'textarea'},
+                {name:'isc_program_code',label:'ISC Program Code'},
+                {name:'reporting_requirements',label:'Reporting Requirements',type:'textarea'}
+            ],
+            council: [
+                {name:'item_type',label:'Type',type:'select',options:['resolution','by-law','meeting'],required:true},
+                {name:'title',label:'Title',required:true},
+                {name:'date',label:'Date',type:'date',required:true},
+                {name:'attendees',label:'Attendees'},
+                {name:'resolution_text',label:'Resolution Text',type:'textarea'},
+                {name:'motion',label:'Motion'},
+                {name:'vote_for',label:'Vote For',type:'number'},
+                {name:'vote_against',label:'Vote Against',type:'number'},
+                {name:'abstain',label:'Abstain',type:'number'},
+                {name:'status',label:'Status',type:'select',options:['pending','approved','rejected','completed']},
+                {name:'band_manager_review',label:'Band Manager Review'},
+                {name:'isc_submitted',label:'ISC Submitted',type:'select',options:['1','0']},
+                {name:'isc_reference',label:'ISC Reference'},
+                {name:'notes',label:'Notes',type:'textarea'}
+            ],
+            finance: [
+                {name:'category',label:'Category',required:true},
+                {name:'type',label:'Type',type:'select',options:['income','expense'],required:true},
+                {name:'amount',label:'Amount',type:'number',required:true},
+                {name:'date',label:'Date',type:'date',required:true},
+                {name:'description',label:'Description'},
+                {name:'funding_source',label:'Funding Source'},
+                {name:'reference_number',label:'Reference Number'},
+                {name:'isc_grant_id',label:'ISC Grant ID'},
+                {name:'approved_by',label:'Approved By'}
+            ],
+            infrastructure: [
+                {name:'name',label:'Name',required:true},
+                {name:'asset_type',label:'Asset Type'},
+                {name:'location',label:'Location'},
+                {name:'condition',label:'Condition',type:'select',options:['good','fair','poor']},
+                {name:'estimated_value',label:'Estimated Value',type:'number'},
+                {name:'last_inspection',label:'Last Inspection',type:'date'},
+                {name:'isc_funding_program',label:'ISC Funding Program'},
+                {name:'maintenance_schedule',label:'Maintenance Schedule'},
+                {name:'notes',label:'Notes',type:'textarea'}
+            ],
+            notification: [
+                {name:'title',label:'Title',required:true},
+                {name:'message',label:'Message',type:'textarea',required:true},
+                {name:'type',label:'Type',type:'select',options:['info','deadline','action','alert']},
+                {name:'priority',label:'Priority',type:'select',options:['low','normal','high']},
+                {name:'related_table',label:'Related Table'},
+                {name:'related_id',label:'Related ID',type:'number'},
+                {name:'is_read',label:'Is Read',type:'select',options:['0','1']}
+            ],
+            task: [
+                {name:'title',label:'Title',required:true},
+                {name:'description',label:'Description',type:'textarea'},
+                {name:'status',label:'Status',type:'select',options:['pending','in-progress','completed']},
+                {name:'priority',label:'Priority',type:'select',options:['low','medium','high']},
+                {name:'assigned_to',label:'Assigned To'},
+                {name:'due_date',label:'Due Date',type:'date'},
+                {name:'related_table',label:'Related Table'},
+                {name:'related_id',label:'Related ID',type:'number'}
+            ],
+            document: [
+                {name:'title',label:'Title',required:true},
+                {name:'document_type',label:'Type',type:'select',options:['report','policy','agreement','by-law','checklist','other']},
+                {name:'file_path',label:'File Path',type:'file'},
+                {name:'content',label:'Content',type:'textarea'},
+                {name:'created_by',label:'Created By'}
+            ],
+            'leave-request': [
+                {name:'staff_id',label:'Staff ID',type:'number'},
+                {name:'leave_type',label:'Leave Type',type:'select',options:['Annual Leave','Sick Leave','Training Leave','Maternity Leave','Bereavement','Other']},
+                {name:'start_date',label:'Start Date',type:'date',required:true},
+                {name:'end_date',label:'End Date',type:'date',required:true},
+                {name:'reason',label:'Reason',type:'textarea'},
+                {name:'status',label:'Status',type:'select',options:['pending','approved','rejected']},
+                {name:'approved_by',label:'Approved By'},
+                {name:'approved_at',label:'Approved Date',type:'date'}
+            ],
+            'purchase-requisition': [
+                {name:'title',label:'Title',required:true},
+                {name:'description',label:'Description',type:'textarea'},
+                {name:'amount',label:'Amount ($)',type:'number',required:true},
+                {name:'vendor',label:'Vendor'},
+                {name:'requested_by',label:'Requested By'},
+                {name:'department',label:'Department'},
+                {name:'status',label:'Status',type:'select',options:['pending','approved','rejected']},
+                {name:'priority',label:'Priority',type:'select',options:['low','medium','high']},
+                {name:'approval_notes',label:'Approval Notes',type:'textarea'}
+            ],
+            'incident-report': [
+                {name:'incident_type',label:'Incident Type',type:'select',options:['Slip and Fall','Vehicle Accident','Equipment Failure','Security Incident','Environmental','Other']},
+                {name:'description',label:'Description',type:'textarea',required:true},
+                {name:'location',label:'Location'},
+                {name:'severity',label:'Severity',type:'select',options:['low','medium','high']},
+                {name:'reported_by',label:'Reported By'},
+                {name:'date_reported',label:'Date Reported',type:'date',required:true},
+                {name:'date_occurred',label:'Date Occurred',type:'date'},
+                {name:'status',label:'Status',type:'select',options:['open','under-review','resolved']},
+                {name:'follow_up_actions',label:'Follow-up Actions',type:'textarea'},
+                {name:'resolved_at',label:'Resolved Date',type:'date'}
+            ],
+            'meeting-request': [
+                {name:'title',label:'Title',required:true},
+                {name:'description',label:'Description',type:'textarea'},
+                {name:'requested_by',label:'Requested By'},
+                {name:'meeting_date',label:'Meeting Date',type:'date',required:true},
+                {name:'start_time',label:'Start Time',type:'time'},
+                {name:'end_time',label:'End Time',type:'time'},
+                {name:'location',label:'Location'},
+                {name:'attendees',label:'Attendees'},
+                {name:'status',label:'Status',type:'select',options:['pending','approved','rejected']},
+                {name:'approved_by',label:'Approved By'},
+                {name:'approved_at',label:'Approved Date',type:'date'}
+            ]
+        };
+
+        function openModal(type, id = null) {
+            currentType = type;
+            editingId = id;
+            document.getElementById('modal-title').textContent = id ? 'Edit ' + type.charAt(0).toUpperCase() + type.slice(1) : 'Add ' + type.charAt(0).toUpperCase() + type.slice(1);
+            const fields = fieldDefs[type];
+            const container = document.getElementById('modal-fields');
+            container.innerHTML = fields.map(f => {
+                let input = '';
+                if (f.type === 'select') {
+                    input = `<select name="${f.name}"><option value="">Select...</option>` + f.options.map(o => `<option value="${o}">${o}</option>`).join('') + `</select>`;
+                } else if (f.type === 'textarea') {
+                    input = `<textarea name="${f.name}"></textarea>`;
+                } else if (f.type === 'file') {
+                    input = `<input type="file" name="${f.name}" ${f.required?'required':''}>`;
+                } else {
+                    input = `<input type="${f.type||'text'}" name="${f.name}" ${f.required?'required':''}>`;
+                }
+                return `<div class="form-group"><label>${f.label}</label>${input}</div>`;
+            }).join('');
+            document.getElementById('modal').classList.add('active');
+            if (id) loadItemData(type, id);
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.remove('active');
+            document.getElementById('modal-form').reset();
+            editingId = null;
+        }
+
+        async function loadItemData(type, id) {
+            try {
+                const apiTypeMap = {
+                    'member': 'members',
+                    'notification': 'notifications',
+                    'program': 'programs',
+                    'finance': 'finances',
+                    'task': 'tasks',
+                    'document': 'documents',
+                    'leave-request': 'leave-requests',
+                    'purchase-requisition': 'purchase-requisitions',
+                    'incident-report': 'incident-reports',
+                    'meeting-request': 'meeting-requests'
+                };
+                const apiType = apiTypeMap[type] || type;
+                const data = await api(`/api/${apiType}/${id}`);
+                const container = document.getElementById('modal-fields');
+                let populated = 0;
+                Object.keys(data).forEach(key => {
+                    const el = container.querySelector(`[name="${key}"]`);
+                    if (el && data[key] !== null && data[key] !== undefined) {
+                        el.value = data[key];
+                        populated++;
+                    }
+                });
+                if (populated === 0) {
+                    console.warn('No fields populated for', type, id, data);
+                }
+            } catch (err) {
+                showError('Failed to load ' + type + ' data: ' + err.message);
+                console.error('loadItemData error:', type, id, err);
+            }
+        }
+
+        async function saveItem(event) {
+            event.preventDefault();
+            const form = event.target;
+            const data = {};
+            let file = null;
+            new FormData(form).forEach((value, key) => {
+                if (value instanceof File) {
+                    file = value;
+                    data[key] = null;
+                } else {
+                    data[key] = value;
+                }
+            });
+            const apiTypeMap = {
+                'member': 'members',
+                'notification': 'notifications',
+                'program': 'programs',
+                'finance': 'finances',
+                'task': 'tasks',
+                'document': 'documents',
+                'leave-request': 'leave-requests',
+                'purchase-requisition': 'purchase-requisitions',
+                'incident-report': 'incident-reports',
+                'meeting-request': 'meeting-requests'
+            };
+            const apiType = apiTypeMap[currentType] || currentType;
+            try {
+                if (currentType === 'document' && file) {
+                    const uploadForm = new FormData();
+                    uploadForm.append('file', file);
+                    const uploadRes = await api('/api/documents/upload', {method: 'POST', body: uploadForm});
+                    data.file_path = uploadRes.file_path;
+                }
+                const url = editingId ? `/api/${apiType}/${editingId}` : `/api/${apiType}`;
+                const method = editingId ? 'PUT' : 'POST';
+                await api(url, {method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+                closeModal();
+                showSection(currentSection);
+            } catch (e) {}
+        }
+
+        async function editItem(type, id) {
+            openModal(type, id);
+        }
+
+        async function deleteItem(type, id) {
+            if (!confirm('Are you sure you want to delete this item?')) return;
+            try {
+                if (type === 'notifications') {
+                    await api(`/api/notifications/${id}`, {method: 'DELETE'});
+                } else if (type === 'documents') {
+                    await api(`/api/documents/${id}`, {method: 'DELETE'});
+                } else {
+                    await api(`/api/${type}/${id}`, {method: 'DELETE'});
+                }
+                showSection(currentSection);
+            } catch (e) {}
+        }
+
+        async function exportFinances() {
+            window.location.href = '/api/export/finances.csv';
+        }
+
+        document.getElementById('member-search')?.addEventListener('input', loadMembers);
+        document.getElementById('staff-search')?.addEventListener('input', loadStaff);
+        document.getElementById('task-filter')?.addEventListener('change', loadTasks);
+        document.getElementById('document-filter')?.addEventListener('change', loadDocuments);
+        document.getElementById('audit-filter')?.addEventListener('change', loadAuditLog);
+        document.getElementById('leave-filter')?.addEventListener('change', loadLeaveRequests);
+        document.getElementById('purchase-filter')?.addEventListener('change', loadPurchaseRequisitions);
+        document.getElementById('incident-filter')?.addEventListener('change', loadIncidentReports);
+        document.getElementById('meeting-filter')?.addEventListener('change', loadMeetingRequests);
+
+        loadDashboard();
+        updateNotificationBadge();
+    </script>
+</body>
+</html>

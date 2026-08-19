@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  band-office:
+    build: .
+    container_name: band-office-app
+    ports:
+      - "${BAND_OFFICE_PORT:-5000}:5000"
+    environment:
+      BAND_OFFICE_PORT: "5000"
+      BAND_OFFICE_DEBUG: "0"
+      BAND_OFFICE_LOG_LEVEL: "info"
+      BAND_OFFICE_WORKERS: "4"
+      BAND_OFFICE_CORS_ORIGIN: "${BAND_OFFICE_CORS_ORIGIN:-*}"
+      BAND_OFFICE_SECRET_KEY: "${BAND_OFFICE_SECRET_KEY:-change-this-in-production}"
+    volumes:
+      - band-office-data:/app/data
+      - band-office-documents:/app/documents
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  band-office-data:
+  band-office-documents:
