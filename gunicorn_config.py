@@ -4,7 +4,8 @@ Gunicorn configuration for Band Office Management production deployment.
 import os
 import multiprocessing
 
-bind = f"0.0.0.0:{os.environ.get('BAND_OFFICE_PORT', '5000')}"
+# Loopback by default; the Docker image sets BAND_OFFICE_HOST=0.0.0.0
+bind = f"{os.environ.get('BAND_OFFICE_HOST', '127.0.0.1')}:{os.environ.get('BAND_OFFICE_PORT', '5000')}"
 workers = int(os.environ.get('BAND_OFFICE_WORKERS', str(multiprocessing.cpu_count() * 2 + 1)))
 worker_class = 'sync'
 timeout = int(os.environ.get('BAND_OFFICE_TIMEOUT', '30'))

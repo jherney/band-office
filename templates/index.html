@@ -63,9 +63,32 @@
         .audit-table th, .audit-table td { padding: 0.5rem; vertical-align: top; }
         .audit-changes { max-width: 400px; max-height: 120px; overflow-y: auto; background: #f8f8f8; border-radius: 4px; padding: 0.5rem; font-size: 0.8rem; }
         .audit-changes pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+        body.logged-out .sidebar, body.logged-out .main-content { display: none; }
+        .login-screen { display: none; min-height: 100vh; justify-content: center; align-items: center; padding: 1rem; }
+        body.logged-out .login-screen { display: flex; }
+        .login-screen .card { width: 100%; max-width: 360px; }
+        .login-screen .btn { width: 100%; }
+        .sidebar-user { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.2); font-size: 0.85rem; display: flex; flex-direction: column; gap: 0.4rem; }
+        .sidebar-user button { background: none; border: 1px solid rgba(255,255,255,0.3); color: white; padding: 0.35rem 0.5rem; border-radius: 4px; cursor: pointer; text-align: left; font-size: 0.85rem; }
+        .sidebar-user button:hover { background: rgba(255,255,255,0.15); }
     </style>
 </head>
-<body>
+<body class="logged-out">
+    <div class="login-screen">
+        <form class="card" id="login-form">
+            <h2>Band Office Sign In</h2>
+            <div id="login-error" class="error" style="display:none;" role="alert"></div>
+            <div class="form-group">
+                <label for="login-username">Username</label>
+                <input id="login-username" name="username" autocomplete="username" required>
+            </div>
+            <div class="form-group">
+                <label for="login-password">Password</label>
+                <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+            </div>
+            <button type="submit" class="btn">Sign In</button>
+        </form>
+    </div>
     <div class="sidebar">
         <h1>Band Office <span id="notif-badge" style="display:none; background:#c41e3a; color:white; border-radius:50%; padding:0.1rem 0.4rem; font-size:0.7rem; margin-left:0.25rem;">0</span></h1>
         <nav class="nav">
@@ -86,7 +109,13 @@
             <button data-section="purchase-requisitions">Purchase Requisitions</button>
             <button data-section="incident-reports">Incident Reports</button>
             <button data-section="meeting-requests">Meeting Requests</button>
+            <button data-section="users">Users</button>
         </nav>
+        <div class="sidebar-user">
+            <span>Signed in as <strong id="current-user"></strong></span>
+            <button type="button" onclick="openModal('password')">Change Password</button>
+            <button type="button" onclick="logout()">Sign Out</button>
+        </div>
     </div>
     <div class="main-content">
         <div class="container">
@@ -99,7 +128,7 @@
                     <h2>Housing by Status</h2>
                     <div id="housing-chart"></div>
                 </div>
-                <div class="card">
+                <div class="card" data-requires="finances">
                     <h2>Expenses by Category</h2>
                     <div id="finances-chart"></div>
                 </div>
@@ -115,7 +144,7 @@
                     <h2>Notifications by Type</h2>
                     <div id="notifications-chart"></div>
                 </div>
-                <div class="card">
+                <div class="card" data-requires="staff">
                     <h2>Staff by Department</h2>
                     <div id="staff-chart"></div>
                 </div>
@@ -124,7 +153,7 @@
                 <h2>Recent Resolutions</h2>
                 <div id="recent-resolutions"></div>
             </div>
-            <div class="card">
+            <div class="card" data-requires="finances">
                 <h2>Recent Finances</h2>
                 <div id="recent-finances"></div>
             </div>
@@ -266,15 +295,15 @@
 
         <div id="reports-section" class="section">
             <div class="stats-grid" id="reports-stats"></div>
-            <div class="card">
+            <div class="card" data-requires="finances">
                 <h2>Budget vs Actual Spending</h2>
                 <div id="budget-report"></div>
             </div>
-            <div class="card">
+            <div class="card" data-requires="finances">
                 <h2>Program Summary</h2>
                 <div id="program-summary"></div>
             </div>
-            <div class="card">
+            <div class="card" data-requires="members">
                 <h2>Member Statistics</h2>
                 <div id="member-stats"></div>
             </div>
@@ -291,9 +320,20 @@
                         <option value="programs">Programs</option>
                         <option value="council">Council</option>
                         <option value="finances">Finances</option>
+                        <option value="users">Users</option>
                     </select>
                 </div>
                 <div id="audit-table"></div>
+            </div>
+        </div>
+
+        <div id="users-section" class="section">
+            <div class="card">
+                <div class="toolbar">
+                    <div></div>
+                    <button class="btn" onclick="openModal('user')">+ Add User</button>
+                </div>
+                <div id="users-table"></div>
             </div>
         </div>
 
@@ -380,6 +420,7 @@
         let currentSection = 'dashboard';
         let currentType = null;
         let editingId = null;
+        let currentUser = null;
 
         document.querySelectorAll('.nav button').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -410,6 +451,68 @@
             else if (section === 'purchase-requisitions') loadPurchaseRequisitions();
             else if (section === 'incident-reports') loadIncidentReports();
             else if (section === 'meeting-requests') loadMeetingRequests();
+            else if (section === 'users') loadUsers();
+        }
+
+        function canOpen(section) {
+            return currentUser && currentUser.sections.includes(section);
+        }
+
+        function showLogin() {
+            currentUser = null;
+            document.body.classList.add('logged-out');
+            document.getElementById('login-username').focus();
+        }
+
+        // The server decides which sections each role may open; hide the rest
+        function onLoggedIn(user) {
+            currentUser = user;
+            document.body.classList.remove('logged-out');
+            document.getElementById('current-user').textContent = `${user.username} (${user.role})`;
+            document.querySelectorAll('.nav button').forEach(btn => {
+                btn.style.display = canOpen(btn.dataset.section) ? '' : 'none';
+            });
+            document.querySelectorAll('[data-requires]').forEach(el => {
+                el.style.display = canOpen(el.dataset.requires) ? '' : 'none';
+            });
+            document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.section === 'dashboard'));
+            showSection('dashboard');
+            updateNotificationBadge();
+        }
+
+        document.getElementById('login-form').addEventListener('submit', async event => {
+            event.preventDefault();
+            const errorEl = document.getElementById('login-error');
+            const {csrf_token} = await fetch('/api/auth/csrf').then(r => r.json());
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf_token},
+                body: JSON.stringify({
+                    username: document.getElementById('login-username').value,
+                    password: document.getElementById('login-password').value,
+                }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                errorEl.textContent = body.error || 'Sign in failed';
+                errorEl.style.display = 'block';
+                return;
+            }
+            errorEl.style.display = 'none';
+            document.getElementById('login-form').reset();
+            onLoggedIn(body);
+        });
+
+        async function logout() {
+            try { await api('/api/auth/logout', {method: 'POST'}); } catch (e) {}
+            // Reload so no previous user's data stays in the page
+            window.location.reload();
+        }
+
+        async function init() {
+            const res = await fetch('/api/auth/me');
+            if (res.ok) onLoggedIn(await res.json());
+            else showLogin();
         }
 
         function showError(message) {
@@ -421,7 +524,15 @@
 
         async function api(url, options = {}) {
             try {
+                const method = (options.method || 'GET').toUpperCase();
+                if (method !== 'GET' && currentUser) {
+                    options = {...options, headers: {...(options.headers || {}), 'X-CSRF-Token': currentUser.csrf_token}};
+                }
                 const res = await fetch(url, options);
+                if (res.status === 401) {
+                    showLogin();
+                    throw new Error('Please sign in again');
+                }
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({error: res.statusText}));
                     throw new Error(err.error || res.statusText);
@@ -433,13 +544,22 @@
             }
         }
 
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[ch]);
+        }
+
+        // Row mappers build HTML from API data, so give them escaped strings (numbers and null pass through)
+        function escapeRow(row) {
+            return Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? escapeHtml(v) : v]));
+        }
+
         function renderTable(container, columns, rows, rowMapper) {
             if (!rows.length) {
                 container.innerHTML = '<p class="empty-state">No data</p>';
                 return;
             }
             container.innerHTML = `<table><tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr>` +
-                rows.map(rowMapper).join('') + `</table>`;
+                rows.map(row => rowMapper(escapeRow(row))).join('') + `</table>`;
         }
 
         function renderBarChart(container, data, formatter) {
@@ -449,21 +569,20 @@
             }
             const max = Math.max(...Object.values(data));
             container.innerHTML = Object.entries(data).map(([k, v]) =>
-                `<div class="chart-item"><div class="chart-item-label">${k}</div><div class="chart-item-row"><div class="chart-bar-track"><div class="chart-bar-value" style="width:${(v / max * 100)}%"></div></div><div class="chart-item-count">${formatter(v)}</div></div></div>`
+                `<div class="chart-item"><div class="chart-item-label">${escapeHtml(k)}</div><div class="chart-item-row"><div class="chart-bar-track"><div class="chart-bar-value" style="width:${(v / max * 100)}%"></div></div><div class="chart-item-count">${formatter(v)}</div></div></div>`
             ).join('');
         }
 
         async function loadDashboard() {
             const data = await api('/api/dashboard');
-            document.getElementById('dashboard-stats').innerHTML = `
-                <div class="stat-card"><h3>Members</h3><div class="value">${data.members}</div></div>
-                <div class="stat-card"><h3>Staff</h3><div class="value">${data.staff}</div></div>
-                <div class="stat-card"><h3>Housing Units</h3><div class="value">${data.housing_units}</div></div>
-                <div class="stat-card"><h3>Active Programs</h3><div class="value">${data.active_programs}</div></div>
-                <div class="stat-card"><h3>Pending Council</h3><div class="value">${data.pending_council}</div></div>
-                <div class="stat-card"><h3>Total Budget</h3><div class="value">$${data.total_budget.toLocaleString()}</div></div>
-                <div class="stat-card"><h3>Total Spent</h3><div class="value">$${data.total_spent.toLocaleString()}</div></div>
-            `;
+            // The server leaves out stats this role may not see
+            const statCards = [
+                ['Members', data.members], ['Staff', data.staff], ['Housing Units', data.housing_units],
+                ['Active Programs', data.active_programs], ['Pending Council', data.pending_council],
+                ['Total Budget', '$' + data.total_budget.toLocaleString()], ['Total Spent', '$' + data.total_spent.toLocaleString()],
+            ];
+            document.getElementById('dashboard-stats').innerHTML = statCards.filter(([, value]) => value !== undefined)
+                .map(([label, value]) => `<div class="stat-card"><h3>${label}</h3><div class="value">${value}</div></div>`).join('');
 
             const pendingData = await api('/api/dashboard/pending-approvals');
             document.querySelectorAll('.pending-approvals-card').forEach(el => el.remove());
@@ -505,7 +624,7 @@
         async function loadNotifications() {
             const data = await api('/api/notifications');
             const container = document.getElementById('notifications-table');
-            renderTable(container, ['Type', 'Title', 'Message', 'Priority', 'Read', 'Actions'], data.notifications, n =>
+            renderTable(container, ['Type', 'Title', 'Message', 'Priority', 'Read', 'Actions'], data, n =>
                 `<tr><td><span class="badge ${n.type==='deadline'?'badge-danger':n.type==='action'?'badge-warning':'badge-info'}">${n.type}</span></td><td>${n.title}</td><td>${n.message}</td><td><span class="badge ${n.priority==='high'?'badge-danger':n.priority==='medium'?'badge-warning':'badge-info'}">${n.priority}</span></td><td>${n.is_read?'Yes':'No'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('notification', ${n.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('notifications', ${n.id})">Delete</button></td></tr>`
             );
         }
@@ -514,8 +633,9 @@
             try {
                 const data = await api('/api/notifications');
                 const badge = document.getElementById('notif-badge');
-                if (data.unread_count > 0) {
-                    badge.textContent = data.unread_count;
+                const unread = data.filter(n => !n.is_read).length;
+                if (unread > 0) {
+                    badge.textContent = unread;
                     badge.style.display = 'inline';
                 } else {
                     badge.style.display = 'none';
@@ -569,7 +689,7 @@
 
         async function loadCouncil() {
             const type = document.getElementById('council-filter').value;
-            const data = await api(`/api/council${type ? '?type=' + type : ''}`);
+            const data = await api(`/api/council${type ? '?item_type=' + encodeURIComponent(type) : ''}`);
             const container = document.getElementById('council-table');
             renderTable(container, ['Type', 'Title', 'Date', 'Status', 'ISC Submitted', 'Actions'], data, c =>
                 `<tr><td>${c.item_type}</td><td>${c.title}</td><td>${c.date}</td><td><span class="badge ${c.status==='approved'||c.status==='completed'?'badge-success':'badge-warning'}">${c.status}</span></td><td>${c.isc_submitted?'Yes':'No'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('council', ${c.id})">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteItem('council', ${c.id})">Delete</button></td></tr>`
@@ -604,7 +724,7 @@
 
         async function loadDocuments() {
             const type = document.getElementById('document-filter').value;
-            const data = await api(`/api/documents${type ? '?type=' + type : ''}`);
+            const data = await api(`/api/documents${type ? '?document_type=' + encodeURIComponent(type) : ''}`);
             const container = document.getElementById('documents-table');
             renderTable(container, ['Title', 'Type', 'File Path', 'Created By', 'Created', 'Actions'], data, d =>
                 `<tr><td>${d.title}</td><td><span class="badge badge-info">${d.document_type}</span></td><td>${d.file_path||'-'}</td><td>${d.created_by||'-'}</td><td>${d.created_at||'-'}</td><td class="actions"><button class="btn btn-sm" onclick="viewDocument(${d.id})">View</button><button class="btn btn-sm btn-danger" onclick="deleteItem('documents', ${d.id})">Delete</button></td></tr>`
@@ -612,6 +732,11 @@
         }
 
         async function loadReports() {
+            if (canOpen('finances')) await loadFinanceReports();
+            if (canOpen('members')) await loadMemberReport();
+        }
+
+        async function loadFinanceReports() {
             const budgetData = await api('/api/reports/budget-vs-actual');
             const budgetContainer = document.getElementById('budget-report');
             renderTable(budgetContainer, ['Program', 'Budget', 'Spent', 'Remaining', 'Status'], budgetData, r =>
@@ -624,14 +749,19 @@
                 `<tr><td>${r.name}</td><td>${r.program_type}</td><td>${r.department}</td><td>$${r.budget.toLocaleString()}</td><td>$${r.spent.toLocaleString()}</td><td>${r.start_date}</td><td>${r.end_date}</td><td><span class="badge ${r.status==='active'?'badge-success':'badge-info'}">${r.status}</span></td></tr>`
             );
 
+        }
+
+        async function loadMemberReport() {
             const memberData = await api('/api/reports/member-stats');
             const memberContainer = document.getElementById('member-stats');
             memberContainer.innerHTML = `<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom:1rem;">
                 <div class="stat-card"><h3>Total Members</h3><div class="value">${memberData.total}</div></div>
             </div>` +
-            `<h4>By Gender</h4><table><tr><th>Gender</th><th>Count</th></tr>` + memberData.by_gender.map(g => `<tr><td>${g.gender}</td><td>${g.count}</td></tr>`).join('') + `</table>` +
-            `<h4 style="margin-top:1rem;">By Reserve</h4><table><tr><th>Reserve</th><th>Count</th></tr>` + memberData.by_reserve.map(r => `<tr><td>${r.reserve}</td><td>${r.count}</td></tr>`).join('') + `</table>`;
+            `<h4>By Gender</h4><table><tr><th>Gender</th><th>Count</th></tr>` + memberData.by_gender.map(g => `<tr><td>${escapeHtml(g.gender)}</td><td>${g.count}</td></tr>`).join('') + `</table>` +
+            `<h4 style="margin-top:1rem;">By Reserve</h4><table><tr><th>Reserve</th><th>Count</th></tr>` + memberData.by_reserve.map(r => `<tr><td>${escapeHtml(r.reserve)}</td><td>${r.count}</td></tr>`).join('') + `</table>`;
         }
+
+        const AUDIT_BADGES = {CREATE: 'badge-success', LOGIN: 'badge-success', UPDATE: 'badge-warning', LOGOUT: 'badge-info'};
 
         async function loadAuditLog() {
             const table = document.getElementById('audit-filter').value;
@@ -641,7 +771,7 @@
                 let changes = '';
                 if (a.old_values) changes += a.old_values;
                 if (a.new_values) changes += (changes ? ' → ' : '') + a.new_values;
-                return `<tr><td>${a.created_at}</td><td><span class="badge ${a.action==='CREATE'?'badge-success':a.action==='UPDATE'?'badge-warning':'badge-danger'}">${a.action}</span></td><td>${a.table_name}</td><td>${a.record_id||'-'}</td><td>${a.user_name||'-'}</td><td><div class="audit-changes"><pre>${changes}</pre></div></td></tr>`;
+                return `<tr><td>${a.created_at}</td><td><span class="badge ${AUDIT_BADGES[a.action] || 'badge-danger'}">${a.action}</span></td><td>${a.table_name}</td><td>${a.record_id||'-'}</td><td>${a.user_name||'-'}</td><td><div class="audit-changes"><pre>${changes}</pre></div></td></tr>`;
             });
         }
 
@@ -681,11 +811,28 @@
             );
         }
 
+        async function loadUsers() {
+            const data = await api('/api/users');
+            renderTable(document.getElementById('users-table'), ['Username', 'Role', 'Active', 'Last Sign In', 'Actions'], data, u =>
+                `<tr><td>${u.username}</td><td><span class="badge badge-info">${u.role}</span></td><td><span class="badge ${u.is_active?'badge-success':'badge-danger'}">${u.is_active?'Yes':'No'}</span></td><td>${u.last_login_at||'-'}</td><td class="actions"><button class="btn btn-sm" onclick="editItem('user', ${u.id})">Edit</button></td></tr>`
+            );
+        }
+
         async function viewDocument(id) {
             window.open(`/api/documents/${id}/file`, '_blank');
         }
 
         const fieldDefs = {
+            user: [
+                {name:'username',label:'Username',required:true},
+                {name:'role',label:'Role',type:'select',options:['admin','finance','registry','staff'],required:true},
+                {name:'is_active',label:'Active',type:'select',options:[{value:'1',label:'Yes'},{value:'0',label:'No'}]},
+                {name:'password',label:'Password (at least 12 characters; leave blank to keep when editing)',type:'password'},
+            ],
+            password: [
+                {name:'current_password',label:'Current Password',type:'password',required:true},
+                {name:'new_password',label:'New Password (at least 12 characters)',type:'password',required:true},
+            ],
             member: [
                 {name:'band_number',label:'Band Number',required:true},
                 {name:'surname',label:'Surname',required:true},
@@ -860,13 +1007,14 @@
         function openModal(type, id = null) {
             currentType = type;
             editingId = id;
-            document.getElementById('modal-title').textContent = id ? 'Edit ' + type.charAt(0).toUpperCase() + type.slice(1) : 'Add ' + type.charAt(0).toUpperCase() + type.slice(1);
+            document.getElementById('modal-title').textContent = type === 'password' ? 'Change Password'
+                : (id ? 'Edit ' : 'Add ') + type.charAt(0).toUpperCase() + type.slice(1);
             const fields = fieldDefs[type];
             const container = document.getElementById('modal-fields');
             container.innerHTML = fields.map(f => {
                 let input = '';
                 if (f.type === 'select') {
-                    input = `<select name="${f.name}"><option value="">Select...</option>` + f.options.map(o => `<option value="${o}">${o}</option>`).join('') + `</select>`;
+                    input = `<select name="${f.name}"><option value="">Select...</option>` + f.options.map(o => typeof o === 'object' ? `<option value="${o.value}">${o.label}</option>` : `<option value="${o}">${o}</option>`).join('') + `</select>`;
                 } else if (f.type === 'textarea') {
                     input = `<textarea name="${f.name}"></textarea>`;
                 } else if (f.type === 'file') {
@@ -889,6 +1037,7 @@
         async function loadItemData(type, id) {
             try {
                 const apiTypeMap = {
+                    'user': 'users',
                     'member': 'members',
                     'notification': 'notifications',
                     'program': 'programs',
@@ -934,6 +1083,7 @@
                 }
             });
             const apiTypeMap = {
+                'user': 'users',
                 'member': 'members',
                 'notification': 'notifications',
                 'program': 'programs',
@@ -947,6 +1097,11 @@
             };
             const apiType = apiTypeMap[currentType] || currentType;
             try {
+                if (currentType === 'password') {
+                    await api('/api/auth/password', {method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+                    closeModal();
+                    return;
+                }
                 if (currentType === 'document' && file) {
                     const uploadForm = new FormData();
                     uploadForm.append('file', file);
@@ -993,8 +1148,7 @@
         document.getElementById('incident-filter')?.addEventListener('change', loadIncidentReports);
         document.getElementById('meeting-filter')?.addEventListener('change', loadMeetingRequests);
 
-        loadDashboard();
-        updateNotificationBadge();
+        init();
     </script>
 </body>
 </html>

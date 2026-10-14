@@ -1,26 +1,98 @@
-from flask import Flask, jsonify, request, send_from_directory, send_file
+from flask import Flask, jsonify, request, send_from_directory, send_file, session, g, has_app_context
 from flask_cors import CORS
+import click
+import functools
+import hashlib
+import hmac
 import sqlite3
 import os
 import csv
 import io
+import json
 import logging
-from datetime import datetime
+import re
+import secrets
+import time
+import uuid
+from datetime import timedelta
 from contextlib import contextmanager
+from werkzeug.exceptions import InternalServerError
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'data', 'band_office.db')
-DOCUMENTS_DIR = os.path.join(BASE_DIR, 'documents')
+DATA_DIR = os.environ.get('BAND_OFFICE_DATA_DIR') or os.path.join(BASE_DIR, 'data')
+DB_PATH = os.path.join(DATA_DIR, 'band_office.db')
+DOCUMENTS_DIR = os.path.realpath(os.path.join(BASE_DIR, 'documents'))
+ALLOWED_DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png'}
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
-CORS(app)
+logger = logging.getLogger(__name__)
 
+# Number of reverse proxies in front of the app. Sign-in limits are per client IP,
+# so behind a proxy this must be set or every user shares the proxy's address.
+PROXY_COUNT = int(os.environ.get('BAND_OFFICE_PROXY_COUNT', '0'))
+if PROXY_COUNT:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=PROXY_COUNT, x_proto=PROXY_COUNT)
+
+# Same-origin only unless an origin is configured explicitly
+CORS_ORIGIN = os.environ.get('BAND_OFFICE_CORS_ORIGIN', '').strip()
+if CORS_ORIGIN:
+    CORS(app, origins=[CORS_ORIGIN])
+
+HOST = os.environ.get('BAND_OFFICE_HOST', '127.0.0.1')
 PORT = int(os.environ.get('BAND_OFFICE_PORT', '5000'))
 DEBUG = os.environ.get('BAND_OFFICE_DEBUG', '0').lower() in ('1', 'true', 'yes')
-SECRET_KEY = os.environ.get('BAND_OFFICE_SECRET_KEY', 'change-this-in-production')
-app.secret_key = SECRET_KEY
 
-logger = logging.getLogger(__name__)
+
+def load_secret_key():
+    key = os.environ.get('BAND_OFFICE_SECRET_KEY', '').strip()
+    if key and key != 'change-this-in-production':
+        return key
+    # Persist a generated key in the data volume so every worker signs sessions
+    # with the same key and logins survive restarts
+    path = os.path.join(DATA_DIR, 'secret_key')
+    if not os.path.exists(path):
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as f:
+            f.write(secrets.token_hex(32))
+        try:
+            os.link(tmp, path)  # atomic; fails if another worker created it first
+        except FileExistsError:
+            pass
+        finally:
+            os.remove(tmp)
+    with open(path) as f:
+        return f.read().strip()
+
+
+app.secret_key = load_secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    # Browsers accept Secure cookies on http://localhost; set 0 only for plain-http access from other hosts
+    SESSION_COOKIE_SECURE=os.environ.get('BAND_OFFICE_COOKIE_SECURE', '1').lower() in ('1', 'true', 'yes'),
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+)
+
+# admin can do everything; other roles reach a resource only when listed for it
+ROLES = ('admin', 'finance', 'registry', 'staff')
+ANY_ROLE = ROLES
+MIN_PASSWORD_LENGTH = 12
+MAX_FAILED_LOGINS = 5  # per IP + username: someone else's failures can't lock you out
+MAX_FAILED_LOGINS_PER_IP = 20  # across usernames, against password spraying
+LOCKOUT = timedelta(minutes=15)
+INVALID_LOGIN = 'Invalid username or password. After repeated failures, sign-in from your computer is paused for 15 minutes.'
+USERNAME_RE = re.compile(r'^[A-Za-z0-9._-]{3,50}$')
+# Compared against when the username is unknown, so failures take the same time either way
+DUMMY_PASSWORD_HASH = generate_password_hash(secrets.token_hex(16))
+# Section name -> roles; CRUD resources are added by register_crud_routes. Served to the frontend.
+SECTION_ROLES = {'dashboard': ANY_ROLE, 'reports': ('finance', 'registry'), 'audit': (), 'users': ()}
+PUBLIC_ENDPOINTS = {'index', 'static', 'send_static', 'favicon', 'health', 'login', 'login_csrf_token'}
+# Unknown usernames can't be locked out, so log their failures at most this often
+UNKNOWN_USER_AUDIT_INTERVAL = timedelta(minutes=1)
 
 
 @contextmanager
@@ -48,14 +120,104 @@ def query_one(conn, sql, params=()):
     return row_to_dict(row) if row else None
 
 
-def execute(conn, sql, params=()):
-    cursor = conn.execute(sql, params)
-    conn.commit()
-    return cursor.lastrowid
+def get_json_body():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValueError("Request body must be a JSON object")
+    nested = [k for k, v in data.items() if isinstance(v, (dict, list))]
+    if nested:
+        raise ValueError(f"Fields must be scalar values: {', '.join(nested)}")
+    return data
+
+
+def get_positive_int_arg(name, default, maximum):
+    try:
+        value = int(request.args.get(name, default))
+    except ValueError:
+        raise ValueError(f"{name} must be an integer")
+    if not 1 <= value <= maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def resolve_document_path(file_path):
+    """Absolute path for a documents.file_path value, or None if it is not a file directly inside DOCUMENTS_DIR."""
+    if not file_path:
+        return None
+    candidate = os.path.realpath(os.path.join(BASE_DIR, file_path))
+    return candidate if os.path.dirname(candidate) == DOCUMENTS_DIR else None
+
+
+def referenced_document_paths(conn):
+    return {resolve_document_path(r[0]) for r in conn.execute("SELECT file_path FROM documents WHERE file_path IS NOT NULL")}
+
+
+def remove_unreferenced_document_file(conn, file_path, referenced=None):
+    path = resolve_document_path(file_path)
+    if not path:
+        return
+    if path in (referenced if referenced is not None else referenced_document_paths(conn)):
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning(f"Could not remove document file {path}: {e}")
+
+
+UPLOAD_NAME_RE = re.compile(r'^[0-9a-f]{32}_')
+ORPHAN_UPLOAD_MAX_AGE = 24 * 3600
+
+
+def sweep_orphan_uploads(conn):
+    """Delete uploads never attached to a document. The age limit leaves time to attach a fresh upload."""
+    cutoff = time.time() - ORPHAN_UPLOAD_MAX_AGE
+    referenced = referenced_document_paths(conn)
+    for name in os.listdir(DOCUMENTS_DIR):
+        if not UPLOAD_NAME_RE.match(name):
+            continue  # only files this app uploaded
+        path = os.path.join(DOCUMENTS_DIR, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                remove_unreferenced_document_file(conn, os.path.join('documents', name), referenced)
+        except FileNotFoundError:
+            pass
+
+
+def write_audit(conn, action, table_name, record_id, old_values=None, new_values=None, user_name=None):
+    to_json = lambda v: json.dumps(v, default=str) if v is not None else None
+    if user_name is None:
+        user = g.get('user') if has_app_context() else None
+        user_name = user['username'] if user else 'system'
+    # created_at uses the column default (UTC, like every other timestamp)
+    conn.execute(
+        "INSERT INTO audit_log (action, table_name, record_id, old_values, new_values, user_name) VALUES (?, ?, ?, ?, ?, ?)",
+        (action, table_name, record_id, to_json(old_values), to_json(new_values), user_name))
+
+
+def has_role(user, roles):
+    return user['role'] == 'admin' or user['role'] in roles
+
+
+def require_roles(*roles):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not has_role(g.user, roles):
+                return jsonify({'error': 'You do not have access to this'}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def is_blank(value):
+    """Missing, null or whitespace-only. 0 and False are real values."""
+    return value is None or (isinstance(value, str) and not value.strip())
 
 
 def validate_required_fields(data, required_fields):
-    missing = [f for f in required_fields if not data.get(f)]
+    missing = [f for f in required_fields if is_blank(data.get(f))]
     if missing:
         raise ValueError(f"Missing required fields: {', '.join(missing)}")
 
@@ -63,6 +225,7 @@ def validate_required_fields(data, required_fields):
 RESOURCE_REGISTRY = {
     'members': {
         'table': 'members',
+        'roles': ('registry',),
         'fields': ['band_number', 'surname', 'given_name', 'middle_name', 'dob', 'gender',
                    'status_number', 'is_register', 'reserve', 'address', 'city', 'province',
                    'postal_code', 'phone', 'email', 'guardian', 'membership_date',
@@ -74,6 +237,7 @@ RESOURCE_REGISTRY = {
     },
     'staff': {
         'table': 'staff',
+        'roles': (),
         'fields': ['surname', 'given_name', 'position', 'department', 'start_date',
                    'end_date', 'status', 'phone', 'email', 'salary', 'benefits_eligible', 'notes'],
         'required': ['surname', 'given_name'],
@@ -90,6 +254,7 @@ RESOURCE_REGISTRY = {
         'search': [],
         'order_by': 'address',
         'pagination': False,
+        'filter_field': 'status',
         'join_member': True,
     },
     'programs': {
@@ -101,6 +266,7 @@ RESOURCE_REGISTRY = {
         'search': [],
         'order_by': 'name',
         'pagination': False,
+        'filter_field': 'status',
     },
     'council': {
         'table': 'council',
@@ -111,9 +277,12 @@ RESOURCE_REGISTRY = {
         'search': [],
         'order_by': 'date DESC',
         'pagination': False,
+        'filter_field': 'item_type',
     },
     'finances': {
         'table': 'finances',
+        'roles': ('finance',),
+        'has_updated_at': False,
         'fields': ['category', 'type', 'amount', 'date', 'description',
                    'funding_source', 'reference_number', 'isc_grant_id', 'approved_by'],
         'required': ['category', 'type', 'amount', 'date'],
@@ -133,6 +302,7 @@ RESOURCE_REGISTRY = {
     },
     'notifications': {
         'table': 'notifications',
+        'has_updated_at': False,
         'fields': ['title', 'message', 'type', 'priority', 'related_table',
                    'related_id', 'is_read'],
         'required': ['title', 'message'],
@@ -159,15 +329,18 @@ RESOURCE_REGISTRY = {
         'order_by': 'created_at DESC',
         'pagination': False,
         'filter_field': 'document_type',
+        'file_field': 'file_path',
     },
     'leave_requests': {
         'table': 'leave_requests',
+        'has_updated_at': False,
         'fields': ['staff_id', 'leave_type', 'start_date', 'end_date', 'reason',
                    'status', 'approved_by', 'approved_at'],
         'required': ['staff_id', 'leave_type', 'start_date', 'end_date'],
         'search': [],
         'order_by': 'created_at DESC',
         'pagination': False,
+        'filter_field': 'status',
         'join_staff': True,
     },
     'purchase_requisitions': {
@@ -182,6 +355,7 @@ RESOURCE_REGISTRY = {
     },
     'incident_reports': {
         'table': 'incident_reports',
+        'has_updated_at': False,
         'fields': ['incident_type', 'description', 'location', 'severity',
                    'reported_by', 'date_reported', 'date_occurred', 'status',
                    'follow_up_actions', 'resolved_at'],
@@ -193,6 +367,7 @@ RESOURCE_REGISTRY = {
     },
     'meeting_requests': {
         'table': 'meeting_requests',
+        'has_updated_at': False,
         'fields': ['title', 'description', 'requested_by', 'meeting_date',
                    'start_time', 'end_time', 'location', 'attendees', 'status',
                    'approved_by', 'approved_at'],
@@ -262,9 +437,12 @@ def register_crud_routes(app, resource_name, url_prefix):
         try:
             with get_db() as conn:
                 search = request.args.get('search', '')
-                filter_value = request.args.get(config.get('filter_field', ''), '') or request.args.get('type', '') or request.args.get('status', '')
-                page = int(request.args.get('page', 1))
-                per_page = int(request.args.get('per_page', 50))
+                filter_field = config.get('filter_field')
+                filter_value = request.args.get(filter_field, '') if filter_field else ''
+                page, per_page = 1, 50
+                if config['pagination']:
+                    page = get_positive_int_arg('page', 1, 1_000_000)
+                    per_page = get_positive_int_arg('per_page', 50, 500)
 
                 query, params = build_list_query(resource_name, search or None, filter_value or None, page, per_page)
                 rows = conn.execute(query, params).fetchall()
@@ -289,22 +467,27 @@ def register_crud_routes(app, resource_name, url_prefix):
                 if config['pagination']:
                     return jsonify({url_prefix: result, 'total': total, 'page': page, 'per_page': per_page})
                 return jsonify(result)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
         except Exception as e:
             logger.error(f"Error listing {table}: {e}")
             return jsonify({'error': f'Failed to list {table}'}), 500
 
     def _create():
         try:
-            data = request.json
+            data = get_json_body()
             validate_required_fields(data, config['required'])
             with get_db() as conn:
-                fields = config['fields']
+                # Leave blank fields out so the column default (or NULL) applies
+                fields = [f for f in config['fields'] if not is_blank(data.get(f))]
                 placeholders = ', '.join(['?'] * len(fields))
-                values = [data.get(f) for f in fields]
+                values = [data[f] for f in fields]
                 sql = f"INSERT INTO {table} ({', '.join(fields)}) VALUES ({placeholders})"
-                lastrowid = execute(conn, sql, values)
-                row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (lastrowid,)).fetchone()
-                return jsonify(row_to_dict(row)), 201
+                lastrowid = conn.execute(sql, values).lastrowid
+                row = row_to_dict(conn.execute(f"SELECT * FROM {table} WHERE id = ?", (lastrowid,)).fetchone())
+                write_audit(conn, 'CREATE', table, lastrowid, new_values=row)
+                conn.commit()
+                return jsonify(row), 201
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
         except Exception as e:
@@ -333,7 +516,9 @@ def register_crud_routes(app, resource_name, url_prefix):
 
     def _update(item_id):
         try:
-            data = request.json
+            data = get_json_body()
+            # Blank clears an optional field; a required field cannot be cleared
+            validate_required_fields(data, [f for f in config['required'] if f in data])
             with get_db() as conn:
                 fields = config['fields']
                 set_clauses = []
@@ -341,16 +526,28 @@ def register_crud_routes(app, resource_name, url_prefix):
                 for f in fields:
                     if f in data:
                         set_clauses.append(f"{f}=?")
-                        values.append(data[f])
+                        values.append(None if is_blank(data[f]) else data[f])
                 if not set_clauses:
                     return jsonify({'error': 'No fields provided for update'}), 400
-                values.append(item_id)
-                sql = f"UPDATE {table} SET {', '.join(set_clauses)}, updated_at=CURRENT_TIMESTAMP WHERE id=?"
-                execute(conn, sql, values)
-                row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
-                if not row:
+                old = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
+                if not old:
                     return jsonify({'error': f'{table.rstrip("s").title()} not found'}), 404
+                changed = [f for f in fields if f in data]
+                if config.get('has_updated_at', True):
+                    set_clauses.append("updated_at=CURRENT_TIMESTAMP")
+                values.append(item_id)
+                sql = f"UPDATE {table} SET {', '.join(set_clauses)} WHERE id=?"
+                conn.execute(sql, values)
+                write_audit(conn, 'UPDATE', table, item_id,
+                            old_values={f: old[f] for f in changed}, new_values={f: None if is_blank(data[f]) else data[f] for f in changed})
+                conn.commit()
+                file_field = config.get('file_field')
+                if file_field and file_field in data and old[file_field] != data[file_field]:
+                    remove_unreferenced_document_file(conn, old[file_field])
+                row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
                 return jsonify(row_to_dict(row))
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
         except Exception as e:
             logger.error(f"Error updating {table} {item_id}: {e}")
             return jsonify({'error': f'Failed to update {table}'}), 500
@@ -358,11 +555,15 @@ def register_crud_routes(app, resource_name, url_prefix):
     def _delete(item_id):
         try:
             with get_db() as conn:
-                row = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (item_id,)).fetchone()
+                row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
                 if not row:
                     return jsonify({'error': f'{table.rstrip("s").title()} not found'}), 404
                 conn.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))
+                write_audit(conn, 'DELETE', table, item_id, old_values=row_to_dict(row))
                 conn.commit()
+                # Remove the file only after the record is gone, so a failure never orphans the row
+                if config.get('file_field'):
+                    remove_unreferenced_document_file(conn, row[config['file_field']])
                 return jsonify({'success': True})
         except Exception as e:
             logger.error(f"Error deleting {table} {item_id}: {e}")
@@ -373,6 +574,10 @@ def register_crud_routes(app, resource_name, url_prefix):
     _get.__name__ = get_fn_name
     _update.__name__ = update_fn_name
     _delete.__name__ = delete_fn_name
+
+    roles = config.get('roles', ANY_ROLE)
+    SECTION_ROLES[url_prefix] = roles
+    _list, _create, _get, _update, _delete = (require_roles(*roles)(fn) for fn in (_list, _create, _get, _update, _delete))
 
     app.add_url_rule(f'/api/{url_prefix}', view_func=_list, methods=['GET'])
     app.add_url_rule(f'/api/{url_prefix}', view_func=_create, methods=['POST'])
@@ -415,6 +620,44 @@ def get_staff_by_department(conn):
     return {r['department']: r['count'] for r in rows}
 
 
+@app.errorhandler(InternalServerError)
+def internal_error(e):
+    # Flask has already logged the traceback; keep API errors in the JSON shape the frontend reads
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Internal server error'}), 500
+    return e
+
+
+@app.before_request
+def authenticate():
+    g.user = None
+    user_id = session.get('user_id')
+    if user_id:
+        with get_db() as conn:
+            row = conn.execute("SELECT id, username, role, is_active, session_version FROM users WHERE id = ?", (user_id,)).fetchone()
+        # Deactivation and password/role changes bump session_version, ending existing sessions
+        if row and row['is_active'] and row['session_version'] == session.get('session_version'):
+            g.user = dict(row)
+        else:
+            session.clear()
+    # CORS preflights carry no cookies and return no data
+    if request.method == 'OPTIONS':
+        return None
+    if g.user is None and request.endpoint not in PUBLIC_ENDPOINTS:
+        return jsonify({'error': 'Authentication required'}), 401
+    # Every write needs the session's token, sign-in included (it gets one from /api/auth/csrf)
+    if request.method not in ('GET', 'HEAD'):
+        token = session.get('csrf_token')
+        if not token and app.config['SESSION_COOKIE_SECURE'] and not request.is_secure:
+            # Browsers drop Secure cookies on plain http (except, in most browsers, localhost)
+            logger.warning("Session cookie not returned over plain http; use HTTPS or set BAND_OFFICE_COOKIE_SECURE=0")
+            return jsonify({'error': 'Your browser did not keep the sign-in cookie because this page is not served over HTTPS. '
+                                     'Use the HTTPS address, or ask the administrator to set BAND_OFFICE_COOKIE_SECURE=0.'}), 403
+        if not token or not hmac.compare_digest(request.headers.get('X-CSRF-Token', ''), token):
+            return jsonify({'error': 'Missing or invalid CSRF token'}), 403
+    return None
+
+
 @app.route('/')
 def index():
     return send_from_directory('templates', 'index.html')
@@ -433,6 +676,15 @@ def favicon():
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok'}), 200
+
+
+DASHBOARD_WIDGET_SECTIONS = {
+    'members': 'members',
+    'staff': 'staff',
+    'staff_by_department': 'staff',
+    'finances_by_category': 'finances',
+    'recent_finances': 'finances',
+}
 
 
 @app.route('/api/dashboard', methods=['GET'])
@@ -458,6 +710,10 @@ def get_dashboard():
             }
             stats['recent_resolutions'] = query_all(conn, "SELECT id, item_type, title, date, status FROM council ORDER BY date DESC LIMIT 5")
             stats['recent_finances'] = query_all(conn, "SELECT id, category, type, amount, date, description FROM finances ORDER BY date DESC LIMIT 5")
+            # Leave out widgets drawn from sections this role can't open
+            for key, section in DASHBOARD_WIDGET_SECTIONS.items():
+                if not has_role(g.user, SECTION_ROLES[section]):
+                    del stats[key]
             return jsonify(stats)
     except Exception as e:
         logger.error(f"Error building dashboard: {e}")
@@ -493,16 +749,20 @@ def upload_document_file():
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
 
-        allowed_extensions = {'.pdf', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png'}
         _, ext = os.path.splitext(file.filename.lower())
-        if ext not in allowed_extensions:
+        if ext not in ALLOWED_DOCUMENT_EXTENSIONS:
             return jsonify({'error': f'File type {ext} not allowed'}), 400
 
         os.makedirs(DOCUMENTS_DIR, exist_ok=True)
-        filename = file.filename
+        # Unique prefix so uploads never overwrite each other; secure_filename strips path components
+        # Reattach the validated ext: secure_filename can drop it (e.g. non-ASCII names)
+        stem = os.path.splitext(file.filename)[0]
+        filename = f"{uuid.uuid4().hex}_{secure_filename(stem)}{ext}"
         file_path = os.path.join('documents', filename)
-        file.save(os.path.join(BASE_DIR, file_path))
+        file.save(os.path.join(DOCUMENTS_DIR, filename))
         logger.info(f"Uploaded document: {filename}")
+        with get_db() as conn:
+            sweep_orphan_uploads(conn)
         return jsonify({'file_path': file_path}), 200
     except Exception as e:
         logger.error(f"Error uploading file: {e}")
@@ -516,22 +776,22 @@ def serve_document_file(doc_id):
             row = conn.execute("SELECT file_path, title FROM documents WHERE id = ?", (doc_id,)).fetchone()
             if not row or not row['file_path']:
                 return jsonify({'error': 'File not found'}), 404
-            file_path = row['file_path']
-            if os.path.isabs(file_path):
-                candidate = file_path
-            else:
-                candidate = os.path.join(BASE_DIR, file_path)
-                if not os.path.exists(candidate):
-                    candidate = file_path
-            if not os.path.exists(candidate):
+            # file_path is client-supplied, so only serve files inside DOCUMENTS_DIR
+            candidate = resolve_document_path(row['file_path'])
+            if not candidate or not os.path.isfile(candidate):
                 return jsonify({'error': 'File not found on server'}), 404
-            return send_file(candidate, as_attachment=False)
+            # Only render allowed upload types inline; anything else (e.g. .html) downloads
+            inline = os.path.splitext(candidate)[1].lower() in ALLOWED_DOCUMENT_EXTENSIONS
+            response = send_file(candidate, as_attachment=not inline)
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            return response
     except Exception as e:
         logger.error(f"Error serving file for document {doc_id}: {e}")
         return jsonify({'error': 'Failed to serve file'}), 500
 
 
 @app.route('/api/export/members.csv')
+@require_roles('registry')
 def export_members_csv():
     try:
         with get_db() as conn:
@@ -549,6 +809,7 @@ def export_members_csv():
 
 
 @app.route('/api/export/finances.csv')
+@require_roles('finance')
 def export_finances_csv():
     try:
         with get_db() as conn:
@@ -578,6 +839,7 @@ def mark_all_notifications_read():
 
 
 @app.route('/api/audit-log', methods=['GET'])
+@require_roles()
 def get_audit_log():
     try:
         with get_db() as conn:
@@ -587,7 +849,7 @@ def get_audit_log():
             if table_name:
                 query += " AND table_name = ?"
                 params.append(table_name)
-            query += " ORDER BY created_at DESC LIMIT 100"
+            query += " ORDER BY created_at DESC, id DESC LIMIT 100"
             rows = conn.execute(query, params).fetchall()
             return jsonify([row_to_dict(r) for r in rows])
     except Exception as e:
@@ -595,25 +857,8 @@ def get_audit_log():
         return jsonify({'error': 'Failed to fetch audit log'}), 500
 
 
-@app.route('/api/audit-log', methods=['POST'])
-def create_audit_log():
-    try:
-        data = request.json
-        with get_db() as conn:
-            cursor = conn.execute(
-                "INSERT INTO audit_log (action, table_name, record_id, old_values, new_values, user_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (data.get('action'), data.get('table_name'), data.get('record_id'), data.get('old_values'),
-                 data.get('new_values'), data.get('user_name', 'system'), data.get('created_at', datetime.now().isoformat()))
-            )
-            conn.commit()
-            log = conn.execute("SELECT * FROM audit_log WHERE id = ?", (cursor.lastrowid,)).fetchone()
-            return jsonify(row_to_dict(log)), 201
-    except Exception as e:
-        logger.error(f"Error creating audit log: {e}")
-        return jsonify({'error': 'Failed to create audit log'}), 500
-
-
 @app.route('/api/reports/budget-vs-actual')
+@require_roles('finance')
 def report_budget_vs_actual():
     try:
         with get_db() as conn:
@@ -630,6 +875,7 @@ def report_budget_vs_actual():
 
 
 @app.route('/api/reports/program-summary')
+@require_roles('finance')
 def report_program_summary():
     try:
         with get_db() as conn:
@@ -639,7 +885,7 @@ def report_program_summary():
                        COUNT(DISTINCT c.id) as council_count,
                        COUNT(DISTINCT f.id) as finance_count
                 FROM programs p
-                LEFT JOIN council c ON c.isc_program_code = p.isc_program_code
+                LEFT JOIN council c ON c.isc_reference = 'ISC-' || p.isc_program_code
                 LEFT JOIN finances f ON f.isc_grant_id = p.isc_program_code
                 GROUP BY p.id
                 ORDER BY p.name
@@ -651,6 +897,7 @@ def report_program_summary():
 
 
 @app.route('/api/reports/member-stats')
+@require_roles('registry')
 def report_member_stats():
     try:
         with get_db() as conn:
@@ -665,6 +912,258 @@ def report_member_stats():
     except Exception as e:
         logger.error(f"Error generating member stats: {e}")
         return jsonify({'error': 'Failed to generate member stats'}), 500
+
+
+def user_payload(user):
+    return {
+        'id': user['id'], 'username': user['username'], 'role': user['role'],
+        'sections': sorted(name for name, roles in SECTION_ROLES.items() if has_role(user, roles)),
+        'csrf_token': session.get('csrf_token'),
+    }
+
+
+def public_user(row):
+    return {k: row[k] for k in ('id', 'username', 'role', 'is_active', 'last_login_at', 'created_at')}
+
+
+def parse_active(value):
+    if value in (True, 1, '1', 'true'):
+        return 1
+    if value in (False, 0, '0', 'false'):
+        return 0
+    raise ValueError("is_active must be true or false")
+
+
+def validate_password(password):
+    if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+
+
+def validate_user_changes(data, creating):
+    """Validated column -> value changes for a users row (password hashed)."""
+    changes = {}
+    if creating or 'username' in data:
+        username = data.get('username')
+        if not isinstance(username, str) or not USERNAME_RE.match(username):
+            raise ValueError("Username must be 3-50 letters, digits, '.', '_' or '-'")
+        changes['username'] = username
+    if creating or 'role' in data:
+        if data.get('role') not in ROLES:
+            raise ValueError(f"Role must be one of: {', '.join(ROLES)}")
+        changes['role'] = data['role']
+    if not is_blank(data.get('is_active')):
+        changes['is_active'] = parse_active(data['is_active'])
+    # Blank password on update means "keep the current one"
+    if creating or data.get('password'):
+        validate_password(data.get('password'))
+        changes['password_hash'] = generate_password_hash(data['password'])
+    return changes
+
+
+def create_user(conn, data):
+    changes = validate_user_changes(data, creating=True)
+    try:
+        user_id = conn.execute(
+            f"INSERT INTO users ({', '.join(changes)}) VALUES ({', '.join('?' * len(changes))})",
+            list(changes.values())).lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError("Username already exists")
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    write_audit(conn, 'CREATE', 'users', user_id, new_values=public_user(row))
+    return row
+
+
+@app.route('/api/auth/csrf')
+def login_csrf_token():
+    # Another site can't read this response, so it can't sign a browser in to an account it controls
+    session.setdefault('csrf_token', secrets.token_urlsafe(32))
+    return jsonify({'csrf_token': session['csrf_token']})
+
+
+def audit_failed_login(conn, user, reason):
+    details = {'reason': reason, 'ip': request.remote_addr}
+    if user:
+        # Bounded: each IP gets MAX_FAILED_LOGINS tries per account per window
+        write_audit(conn, 'LOGIN_FAILED', 'users', user['id'], new_values=details, user_name=user['username'])
+        return
+    # Never store the attempted name: people sometimes type a password into it
+    since = f"-{int(UNKNOWN_USER_AUDIT_INTERVAL.total_seconds())} seconds"
+    if not conn.execute("SELECT 1 FROM audit_log WHERE action = 'LOGIN_FAILED' AND record_id IS NULL AND created_at > datetime('now', ?)",
+                        (since,)).fetchone():
+        details['note'] = 'further unknown-username failures within a minute are not logged'
+        write_audit(conn, 'LOGIN_FAILED', 'users', None, new_values=details, user_name='(unknown)')
+
+
+def login_blocked(conn, ip, username_key):
+    window = f"-{int(LOCKOUT.total_seconds())} seconds"
+    conn.execute("DELETE FROM login_failures WHERE failed_at <= datetime('now', ?)", (window,))
+    per_account = conn.execute("SELECT COUNT(*) FROM login_failures WHERE ip = ? AND username_hash = ?",
+                               (ip, username_key)).fetchone()[0]
+    per_ip = conn.execute("SELECT COUNT(*) FROM login_failures WHERE ip = ?", (ip,)).fetchone()[0]
+    return per_account >= MAX_FAILED_LOGINS or per_ip >= MAX_FAILED_LOGINS_PER_IP
+
+
+_warned_unconfigured_proxy = False
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    global _warned_unconfigured_proxy
+    try:
+        data = get_json_body()
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    username = str(data.get('username') or '')
+    password = str(data.get('password') or '')
+    ip = request.remote_addr or ''
+    if not PROXY_COUNT and 'X-Forwarded-For' in request.headers and not _warned_unconfigured_proxy:
+        logger.warning("Requests arrive through a proxy but BAND_OFFICE_PROXY_COUNT is not set; "
+                       "sign-in limits will treat all users as one IP")
+        _warned_unconfigured_proxy = True
+    # Hashed: the attempted name may be a mistyped password
+    username_key = hashlib.sha256(username.encode()).hexdigest()
+    with get_db() as conn:
+        # Blocked, wrong and unknown all get the same answer, so responses don't reveal which accounts exist
+        if login_blocked(conn, ip, username_key):
+            conn.commit()
+            return jsonify({'error': INVALID_LOGIN}), 401
+        user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        valid = check_password_hash(user['password_hash'] if user else DUMMY_PASSWORD_HASH, password)
+        if not (user and valid and user['is_active']):
+            conn.execute("INSERT INTO login_failures (ip, username_hash) VALUES (?, ?)", (ip, username_key))
+            if user:
+                audit_failed_login(conn, user, 'wrong password' if not valid else 'inactive account')
+            else:
+                audit_failed_login(conn, None, 'unknown username')
+            if login_blocked(conn, ip, username_key):  # this failure reached a limit; logged once per block
+                write_audit(conn, 'LOCKOUT', 'users', user['id'] if user else None,
+                            new_values={'ip': ip, 'minutes': int(LOCKOUT.total_seconds() // 60)},
+                            user_name=user['username'] if user else '(unknown)')
+            conn.commit()
+            return jsonify({'error': INVALID_LOGIN}), 401
+        conn.execute("DELETE FROM login_failures WHERE ip = ? AND username_hash = ?", (ip, username_key))
+        conn.execute("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", (user['id'],))
+        write_audit(conn, 'LOGIN', 'users', user['id'], new_values={'ip': ip}, user_name=user['username'])
+        conn.commit()
+    # New session on login so a pre-login session id can't be reused
+    session.clear()
+    session.permanent = True
+    session['user_id'] = user['id']
+    session['session_version'] = user['session_version']
+    session['csrf_token'] = secrets.token_urlsafe(32)
+    return jsonify(user_payload(user))
+
+
+@app.route('/api/auth/me')
+def current_user():
+    return jsonify(user_payload(g.user))
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    with get_db() as conn:
+        write_audit(conn, 'LOGOUT', 'users', g.user['id'])
+        conn.commit()
+    session.clear()
+    return jsonify({'success': True})
+
+
+@app.route('/api/auth/password', methods=['POST'])
+def change_own_password():
+    try:
+        data = get_json_body()
+        with get_db() as conn:
+            row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (g.user['id'],)).fetchone()
+            if not check_password_hash(row['password_hash'], str(data.get('current_password') or '')):
+                raise ValueError("Current password is incorrect")
+            validate_password(data.get('new_password'))
+            conn.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?",
+                         (generate_password_hash(data['new_password']), g.user['id']))
+            write_audit(conn, 'UPDATE', 'users', g.user['id'], new_values={'password': '(changed)'})
+            conn.commit()
+            # Other sessions end; keep this one
+            session['session_version'] = g.user['session_version'] + 1
+            return jsonify({'success': True})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/users', methods=['GET'])
+@require_roles()
+def list_users():
+    with get_db() as conn:
+        return jsonify([public_user(r) for r in conn.execute("SELECT * FROM users ORDER BY username")])
+
+
+@app.route('/api/users/<int:user_id>', methods=['GET'])
+@require_roles()
+def get_user(user_id):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return jsonify(public_user(row)) if row else (jsonify({'error': 'User not found'}), 404)
+
+
+@app.route('/api/users', methods=['POST'])
+@require_roles()
+def create_user_route():
+    try:
+        data = get_json_body()
+        with get_db() as conn:
+            row = create_user(conn, data)
+            conn.commit()
+            return jsonify(public_user(row)), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@require_roles()
+def update_user(user_id):
+    try:
+        data = get_json_body()
+        changes = validate_user_changes(data, creating=False)
+        with get_db() as conn:
+            old = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not old:
+                return jsonify({'error': 'User not found'}), 404
+            if not changes:
+                return jsonify({'error': 'No fields provided for update'}), 400
+            sets = [f"{k} = ?" for k in changes]
+            if 'password_hash' in changes or any(k in changes and changes[k] != old[k] for k in ('role', 'is_active')):
+                sets.append("session_version = session_version + 1")  # sign the user out everywhere
+            try:
+                conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", [*changes.values(), user_id])
+            except sqlite3.IntegrityError:
+                raise ValueError("Username already exists")
+            if not conn.execute("SELECT 1 FROM users WHERE role = 'admin' AND is_active = 1").fetchone():
+                conn.rollback()
+                raise ValueError("At least one active admin is required")
+            audited = {k: v for k, v in changes.items() if k != 'password_hash'}
+            if 'password_hash' in changes:
+                audited['password'] = '(changed)'
+            write_audit(conn, 'UPDATE', 'users', user_id,
+                        old_values={k: old[k] for k in audited if k != 'password'}, new_values=audited)
+            conn.commit()
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return jsonify(public_user(row))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.cli.command('create-user')
+@click.argument('username')
+@click.option('--role', type=click.Choice(ROLES), default='admin', show_default=True)
+@click.password_option()
+def create_user_command(username, role, password):
+    """Create a login, e.g. the first admin: flask --app app create-user alice"""
+    init_db()
+    try:
+        with get_db() as conn:
+            create_user(conn, {'username': username, 'role': role, 'password': password})
+            conn.commit()
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"Created {role} user {username}")
 
 
 def seed_members(conn):
@@ -1121,11 +1620,38 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                session_version INTEGER NOT NULL DEFAULT 0,
+                last_login_at TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS login_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL,
+                username_hash TEXT NOT NULL,
+                failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS login_failures_ip ON login_failures (ip, username_hash)")
+        # Earlier versions wrote these in local time as ISO 'YYYY-MM-DDTHH:MM:SS'; store UTC like CURRENT_TIMESTAMP
+        conn.execute("UPDATE audit_log SET created_at = datetime(created_at, 'utc') WHERE created_at LIKE '____-__-__T%'")
+        conn.execute("UPDATE users SET last_login_at = datetime(last_login_at, 'utc') WHERE last_login_at LIKE '____-__-__T%'")
         conn.commit()
 
         if conn.execute("SELECT COUNT(*) FROM members").fetchone()[0] == 0:
             seed_data(conn)
             conn.commit()
+
+        if not conn.execute("SELECT 1 FROM users").fetchone():
+            logger.warning("No users exist yet. Create the first admin with: flask --app app create-user <username>")
 
 
 register_crud_routes(app, 'members', 'members')
@@ -1146,4 +1672,4 @@ register_crud_routes(app, 'meeting_requests', 'meeting-requests')
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     init_db()
-    app.run(host='0.0.0.0', port=PORT, debug=DEBUG)
+    app.run(host=HOST, port=PORT, debug=DEBUG)

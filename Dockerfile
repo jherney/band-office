@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Listen on all interfaces inside the container; compose publishes on 127.0.0.1 only
+ENV BAND_OFFICE_HOST=0.0.0.0
+
 # Install system dependencies (curl for healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates && \
@@ -19,11 +22,16 @@ COPY entrypoint.sh entrypoint.sh
 COPY templates/ templates/
 COPY static/ static/
 
+# Unprivileged runtime user
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+
 # Create directories for runtime data (persisted via volumes)
-RUN mkdir -p /app/data /app/documents && chmod 755 /app/data /app/documents
+RUN mkdir -p /app/data /app/documents && chown app:app /app/data /app/documents && chmod 755 /app/data /app/documents
 
 # Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh
+
+USER app
 
 EXPOSE 5000
 

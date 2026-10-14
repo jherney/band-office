@@ -21,3 +21,4 @@ env/
 *.log
 
 .DS_Store
+data/secret_key
